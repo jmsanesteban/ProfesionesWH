@@ -81,14 +81,37 @@ _RE_DASH    = re.compile(r'^[-—–]+$')
 # Section regexes
 # ---------------------------------------------------------------------------
 
+# These patterns anchor at the start of a line (after _normalize_sections runs).
 _RE_SECTION = {
-    'skills':    re.compile(r'^(?:habilidades?|sk\w+s?)\s*:', re.IGNORECASE | re.MULTILINE),
-    'talents':   re.compile(r'^(?:talentos?|talents?)\s*:', re.IGNORECASE | re.MULTILINE),
-    'trappings': re.compile(r'^(?:enseres?|trappings?)\s*:', re.IGNORECASE | re.MULTILINE),
-    'entries':   re.compile(r'^(?:accesos?|entradas?|career\s+entr(?:y|ies))\s*:', re.IGNORECASE | re.MULTILINE),
-    'exits':     re.compile(r'^(?:salidas?|career\s+exits?)\s*:', re.IGNORECASE | re.MULTILINE),
+    'skills':    re.compile(
+        r'^(?:habilidades?|skills?)\s*:',
+        re.IGNORECASE | re.MULTILINE),
+    'talents':   re.compile(
+        r'^(?:talentos?|talents?)\s*:',
+        re.IGNORECASE | re.MULTILINE),
+    'trappings': re.compile(
+        r'^(?:enseres?|adornos?|equipo|trappings?)\s*:',
+        re.IGNORECASE | re.MULTILINE),
+    'entries':   re.compile(
+        r'^(?:accesos?(?:\s+de\s+carrera)?|entradas?\s+de\s+carrera|entradas?|career\s+entr(?:y|ies))\s*:',
+        re.IGNORECASE | re.MULTILINE),
+    'exits':     re.compile(
+        r'^(?:salidas?\s+(?:profesionales?|de\s+carrera)|salidas?|career\s+exits?)\s*:',
+        re.IGNORECASE | re.MULTILINE),
 }
 _SECTION_ORDER = ['skills', 'talents', 'trappings', 'entries', 'exits']
+
+# Detects any section header appearing mid-line so we can insert \n before it.
+_RE_SECTION_INLINE = re.compile(
+    r'(?<!\n)'
+    r'(\b(?:'
+    r'habilidades?|talentos?|enseres?|adornos?|equipo|'
+    r'accesos?(?:\s+de\s+carrera)?|entradas?\s+de\s+carrera|entradas?|'
+    r'salidas?\s+(?:profesionales?|de\s+carrera)|salidas?|'
+    r'career\s+(?:entr(?:y|ies)|exits?)|skills?|talents?|trappings?'
+    r')\s*:)',
+    re.IGNORECASE,
+)
 
 # Junk at the start of OCR-extracted name lines: page numbers, decorations
 _RE_LEADING_JUNK = re.compile(r'^[\d.\s\-–—♦•★◆▶▸·]+')
@@ -346,8 +369,19 @@ def _empty_stats() -> dict:
 # Section extraction (text-based — already works well)
 # ---------------------------------------------------------------------------
 
+def _normalize_sections(text: str) -> str:
+    """Ensure every section header starts on its own line.
+
+    fitz sometimes runs 'Talentos: A, B Adornos: C, D' on one line without
+    a newline between sections.  This pre-processing step inserts \\n before
+    any mid-line section header so the '^' anchors in _RE_SECTION work.
+    """
+    return _RE_SECTION_INLINE.sub(r'\n\1', text)
+
+
 def _parse_sections(text: str) -> dict:
     """Extract Skills, Talents, Trappings, Entries, Exits from page text."""
+    text = _normalize_sections(text)
     sections = {k + '_raw': '' for k in _SECTION_ORDER}
     for idx, key in enumerate(_SECTION_ORDER):
         m = _RE_SECTION[key].search(text)
@@ -358,8 +392,46 @@ def _parse_sections(text: str) -> dict:
             nm = _RE_SECTION[later].search(text, m.end())
             if nm and nm.start() < end:
                 end = nm.start()
-        sections[key + '_raw'] = text[m.end():end].strip().strip(':').strip()
+        raw = text[m.end():end].strip().strip(':').strip()
+        if key in ('skills', 'talents'):
+            # Filter tokens that are description sentences rather than names.
+            raw = _filter_items(raw)
+        elif key in ('entries', 'exits'):
+            # Career entries/exits are short profession names separated by commas.
+            # Truncate at the first sentence-like token (contains a period or > 80 chars).
+            raw = _filter_career_list(raw)
+        sections[key + '_raw'] = raw
     return sections
+
+
+def _filter_items(raw: str) -> str:
+    """Remove description-sentence tokens from a comma-separated skill/talent list.
+
+    A token is treated as a name if it is ≤80 chars and contains no period.
+    """
+    clean = []
+    for part in raw.split(','):
+        item = part.strip()
+        if item and len(item) <= 80 and '.' not in item:
+            clean.append(item)
+    return ', '.join(clean)
+
+
+def _filter_career_list(raw: str) -> str:
+    """Extract profession names from an entries/exits raw string.
+
+    Stops accumulating at the first token that looks like a sentence
+    (contains a period or is longer than 60 chars).
+    """
+    clean = []
+    for part in raw.split(','):
+        item = part.strip()
+        if not item:
+            continue
+        if len(item) > 60 or '.' in item:
+            break   # everything after this is description text
+        clean.append(item)
+    return ', '.join(clean)
 
 
 # ---------------------------------------------------------------------------

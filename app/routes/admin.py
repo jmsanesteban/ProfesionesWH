@@ -314,7 +314,7 @@ def _validate_pdf_professions(professions: list, all_skills, all_talents) -> lis
         if skill_names:
             for raw in prof.get('skills_raw', '').replace(' o ', ',').replace(' or ', ',').split(','):
                 item = raw.strip()
-                if not item:
+                if not item or len(item) > 80 or '.' in item:
                     continue
                 if not difflib.get_close_matches(item.lower(), skill_names, n=1, cutoff=0.65):
                     unmatched_skills.append(item)
@@ -323,7 +323,7 @@ def _validate_pdf_professions(professions: list, all_skills, all_talents) -> lis
         if talent_names:
             for raw in prof.get('talents_raw', '').replace(' o ', ',').replace(' or ', ',').split(','):
                 item = raw.strip()
-                if not item:
+                if not item or len(item) > 80 or '.' in item:
                     continue
                 if not difflib.get_close_matches(item.lower(), talent_names, n=1, cutoff=0.65):
                     unmatched_talents.append(item)
@@ -342,11 +342,10 @@ def _match_and_save_skills(prof, skills_raw: str):
     skill_map = {s.name_es.lower(): s for s in all_skills}
     skill_map.update({s.name_en.lower(): s for s in all_skills if s.name_en})
 
-    # Split on commas and 'o'/'or'
     parts = [p.strip() for p in skills_raw.replace(' o ', ',').replace(' or ', ',').split(',')]
     group = None
     for raw_part in parts:
-        if not raw_part:
+        if not raw_part or len(raw_part) > 80 or '.' in raw_part:
             continue
         matches = difflib.get_close_matches(raw_part.lower(), skill_map.keys(), n=1, cutoff=0.7)
         if matches:
@@ -364,7 +363,7 @@ def _match_and_save_talents(prof, talents_raw: str):
     parts = [p.strip() for p in talents_raw.replace(' o ', ',').replace(' or ', ',').split(',')]
     group = None
     for raw_part in parts:
-        if not raw_part:
+        if not raw_part or len(raw_part) > 80 or '.' in raw_part:
             continue
         matches = difflib.get_close_matches(raw_part.lower(), talent_map.keys(), n=1, cutoff=0.7)
         if matches:
