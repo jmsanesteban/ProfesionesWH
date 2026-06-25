@@ -90,7 +90,7 @@ _RE_SECTION = {
         r'^(?:talentos?|talents?)\s*:',
         re.IGNORECASE | re.MULTILINE),
     'trappings': re.compile(
-        r'^(?:enseres?|adornos?|equipo|trappings?)\s*:',
+        r'^(?:enseres?|adornos?|accesorios?|equipo|trappings?)\s*:',
         re.IGNORECASE | re.MULTILINE),
     'entries':   re.compile(
         r'^(?:accesos?(?:\s+de\s+carrera)?|entradas?\s+de\s+carrera|entradas?|career\s+entr(?:y|ies))\s*:',
@@ -113,7 +113,7 @@ _RE_NARRATIVE_START = re.compile(
 _RE_SECTION_INLINE = re.compile(
     r'(?<!\n)'
     r'(\b(?:'
-    r'habilidades?|talentos?|enseres?|adornos?|equipo|'
+    r'habilidades?|talentos?|enseres?|adornos?|accesorios?|equipo|'
     r'accesos?(?:\s+de\s+carrera)?|entradas?\s+de\s+carrera|entradas?|'
     r'salidas?\s+(?:profesionales?|de\s+carrera)|salidas?|'
     r'career\s+(?:entr(?:y|ies)|exits?)|skills?|talents?|trappings?'

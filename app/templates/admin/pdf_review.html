@@ -226,6 +226,16 @@
 }
 .chip-remove:hover { opacity: 1; }
 
+/* Editable chip label */
+.chip-label { cursor: pointer; }
+.chip-label:hover { text-decoration: underline; text-underline-offset: 2px; }
+.chip.editing { outline: 1px solid var(--wh-gold); }
+.chip-edit-input {
+  background: transparent; border: none; border-bottom: 1px solid var(--wh-gold);
+  color: var(--wh-gold-light); font-size: .82rem; outline: none;
+  padding: 0 2px; width: 130px; font-family: inherit;
+}
+
 .chip-input-wrap { position: relative; display: flex; flex: 1; min-width: 120px; }
 .chip-input {
   background: transparent; border: none; outline: none;
@@ -297,7 +307,6 @@
   };
 
   ChipField.prototype._render = function () {
-    /* Remove existing chip elements (keep input-wrap) */
     Array.from(this.container.querySelectorAll('.chip')).forEach(el => el.remove());
 
     var self = this;
@@ -305,8 +314,17 @@
       var el  = document.createElement('span');
       el.className = 'chip ' + (self._isMatch(text) ? 'match' : 'nomatch');
 
-      var label = document.createTextNode(text + ' ');
-      var btn   = document.createElement('button');
+      /* Label — click to edit */
+      var label = document.createElement('span');
+      label.className = 'chip-label';
+      label.textContent = text;
+      label.title = 'Haz clic para editar';
+      label.addEventListener('click', function (e) {
+        e.stopPropagation();
+        self._editChip(el, idx);
+      });
+
+      var btn = document.createElement('button');
       btn.type      = 'button';
       btn.className = 'chip-remove';
       btn.setAttribute('aria-label', 'Eliminar');
@@ -325,6 +343,37 @@
     });
 
     this._sync();
+  };
+
+  ChipField.prototype._editChip = function (chipEl, idx) {
+    var self     = this;
+    var original = this.chips[idx];
+    var label    = chipEl.querySelector('.chip-label');
+
+    var inp = document.createElement('input');
+    inp.type      = 'text';
+    inp.className = 'chip-edit-input';
+    inp.value     = original;
+
+    chipEl.classList.add('editing');
+    label.style.display = 'none';
+    chipEl.insertBefore(inp, label);
+    inp.focus();
+    inp.select();
+
+    function commit() {
+      var val = inp.value.trim();
+      if (val) self.chips[idx] = val;
+      else     self.chips.splice(idx, 1);
+      self._render();
+      self._sync();
+    }
+
+    inp.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter')  { e.preventDefault(); commit(); }
+      if (e.key === 'Escape') { e.preventDefault(); self._render(); }
+    });
+    inp.addEventListener('blur', function () { commit(); });
   };
 
   ChipField.prototype._sync = function () {

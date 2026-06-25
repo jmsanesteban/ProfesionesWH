@@ -1,6 +1,8 @@
+import difflib
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 import time
@@ -295,6 +297,96 @@ def pdf_save():
     return redirect(url_for('professions.edit', prof_id=prof.id))
 
 
+# ---------------------------------------------------------------------------
+# Known translation discrepancies: Google-Translate ES → official WFRP2 ES
+# These are terms where GTranslate consistently produces the wrong word and
+# difflib fuzzy matching cannot bridge the gap.
+# ---------------------------------------------------------------------------
+_ES_SYNONYMS = {
+    'lectura/escritura':     'leer/escribir',
+    'leer / escribir':       'leer/escribir',
+    'encanto':               'carisma',
+    'chisme':                'cotilleo',
+    'curación':              'curar',
+    'cuidado de animales':   'criar animales',
+    'adiestramiento animal': 'adiestrar animales',
+    'hablar idioma':         'hablar idioma',   # same — keep for completeness
+    'sangre fría':           'sangre fría',
+    'franqueza':             'contundente',
+}
+
+# EN synonyms (GTranslate EN → official EN name in DB)
+_EN_SYNONYMS = {
+    'read/write':   'read/write',
+    'gossip':       'gossip',
+    'heal':         'heal',
+}
+
+
+def _normalize_item(item: str, synonyms: dict) -> str:
+    """Apply synonym table, then return lowercased, stripped token."""
+    low = item.lower().strip()
+    return synonyms.get(low, low)
+
+
+def _fuzzy_match(item: str, name_set: set, synonyms: dict, cutoff: float = 0.65) -> bool:
+    """
+    Multi-strategy matching:
+      1. Direct synonym lookup
+      2. difflib fuzzy against the full set
+      3. Component matching: split 'A/B' → try each component separately
+    Returns True if any strategy finds a match.
+    """
+    import difflib
+    norm = _normalize_item(item, synonyms)
+
+    # Strategy 1: synonym hit
+    if norm in name_set:
+        return True
+
+    # Strategy 2: standard fuzzy
+    if difflib.get_close_matches(norm, name_set, n=1, cutoff=cutoff):
+        return True
+
+    # Strategy 3: slash-separated components (e.g. 'leer/escribir')
+    parts = [p.strip() for p in re.split(r'[/,]', norm) if p.strip()]
+    if len(parts) > 1:
+        if any(
+            difflib.get_close_matches(p, name_set, n=1, cutoff=cutoff)
+            for p in parts
+        ):
+            return True
+
+    return False
+
+
+def _fuzzy_find(item: str, name_map: dict, synonyms: dict, cutoff: float = 0.7):
+    """
+    Like _fuzzy_match but returns the matched DB object (or None).
+    name_map: {lowercased_name: db_object}
+    """
+    import difflib
+    norm = _normalize_item(item, synonyms)
+
+    # Strategy 1: synonym → direct lookup
+    if norm in name_map:
+        return name_map[norm]
+
+    # Strategy 2: standard fuzzy
+    hits = difflib.get_close_matches(norm, name_map.keys(), n=1, cutoff=cutoff)
+    if hits:
+        return name_map[hits[0]]
+
+    # Strategy 3: slash components
+    parts = [p.strip() for p in re.split(r'[/,]', norm) if p.strip()]
+    for part in parts:
+        hits = difflib.get_close_matches(part, name_map.keys(), n=1, cutoff=cutoff)
+        if hits:
+            return name_map[hits[0]]
+
+    return None
+
+
 def _validate_pdf_professions(professions: list, all_skills, all_talents) -> list:
     """
     For each profession dict, add:
@@ -303,8 +395,6 @@ def _validate_pdf_professions(professions: list, all_skills, all_talents) -> lis
       no_exits          — True if exits_raw is empty
       no_entries        — True if entries_raw is empty
     """
-    import difflib
-
     skill_names  = set()
     for s in all_skills:
         skill_names.add(s.name_es.lower())
@@ -318,10 +408,10 @@ def _validate_pdf_professions(professions: list, all_skills, all_talents) -> lis
             talent_names.add(t.name_en.lower())
 
     for prof in professions:
-        # For English PDFs, use the pre-translation English raw for better matching
-        # against name_en in the DB (avoids Google-Translate ≠ official-Spanish gap).
+        # Prefer pre-translation English raw (avoids GTranslate ≠ official-Spanish gap)
         skills_to_check  = prof.get('skills_raw_en')  or prof.get('skills_raw', '')
         talents_to_check = prof.get('talents_raw_en') or prof.get('talents_raw', '')
+        syn = _ES_SYNONYMS if not prof.get('skills_raw_en') else _EN_SYNONYMS
 
         unmatched_skills = []
         if skill_names:
@@ -329,7 +419,7 @@ def _validate_pdf_professions(professions: list, all_skills, all_talents) -> lis
                 item = raw.strip()
                 if not item or len(item) > 80 or '.' in item:
                     continue
-                if not difflib.get_close_matches(item.lower(), skill_names, n=1, cutoff=0.65):
+                if not _fuzzy_match(item, skill_names, syn, cutoff=0.65):
                     unmatched_skills.append(item)
 
         unmatched_talents = []
@@ -338,7 +428,7 @@ def _validate_pdf_professions(professions: list, all_skills, all_talents) -> lis
                 item = raw.strip()
                 if not item or len(item) > 80 or '.' in item:
                     continue
-                if not difflib.get_close_matches(item.lower(), talent_names, n=1, cutoff=0.65):
+                if not _fuzzy_match(item, talent_names, syn, cutoff=0.65):
                     unmatched_talents.append(item)
 
         prof['unmatched_skills']  = unmatched_skills
@@ -350,40 +440,36 @@ def _validate_pdf_professions(professions: list, all_skills, all_talents) -> lis
 
 
 def _match_and_save_skills(prof, skills_raw: str, skills_raw_en: str = ''):
-    import difflib
     all_skills = Skill.query.all()
     skill_map = {s.name_es.lower(): s for s in all_skills}
     skill_map.update({s.name_en.lower(): s for s in all_skills if s.name_en})
 
-    # Prefer English source so "Charm" matches name_en="Charm" instead of
-    # "encanto" (Google Translate) failing to match name_es="Carisma".
     source = skills_raw_en or skills_raw
+    syn = _EN_SYNONYMS if skills_raw_en else _ES_SYNONYMS
     parts = [p.strip() for p in source.replace(' or ', ',').replace(' o ', ',').split(',')]
     group = None
     for raw_part in parts:
         if not raw_part or len(raw_part) > 80 or '.' in raw_part:
             continue
-        matches = difflib.get_close_matches(raw_part.lower(), skill_map.keys(), n=1, cutoff=0.7)
-        if matches:
-            skill = skill_map[matches[0]]
+        skill = _fuzzy_find(raw_part, skill_map, syn, cutoff=0.7)
+        if skill:
             ps = ProfessionSkill(profession_id=prof.id, skill_id=skill.id, choice_group=group)
             db.session.add(ps)
 
 
 def _match_and_save_talents(prof, talents_raw: str, talents_raw_en: str = ''):
-    import difflib
     all_talents = Talent.query.all()
     talent_map = {t.name_es.lower(): t for t in all_talents}
     talent_map.update({t.name_en.lower(): t for t in all_talents if t.name_en})
 
     source = talents_raw_en or talents_raw
+    syn = _EN_SYNONYMS if talents_raw_en else _ES_SYNONYMS
     parts = [p.strip() for p in source.replace(' or ', ',').replace(' o ', ',').split(',')]
     group = None
     for raw_part in parts:
         if not raw_part or len(raw_part) > 80 or '.' in raw_part:
             continue
-        matches = difflib.get_close_matches(raw_part.lower(), talent_map.keys(), n=1, cutoff=0.7)
-        if matches:
-            talent = talent_map[matches[0]]
+        talent = _fuzzy_find(raw_part, talent_map, syn, cutoff=0.7)
+        if talent:
             pt = ProfessionTalent(profession_id=prof.id, talent_id=talent.id, choice_group=group)
             db.session.add(pt)
