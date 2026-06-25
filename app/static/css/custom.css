@@ -395,6 +395,117 @@ a:hover { color: var(--wh-gold-light); }
 ::-webkit-scrollbar-thumb { background: var(--wh-border-gold); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--wh-gold-dark); }
 
+/* ---- Skill/Talent list items ---- */
+.wh-item-list { display: flex; flex-direction: column; }
+
+.wh-item-entry {
+  padding: .8rem 1rem;
+  border-left: 1px solid var(--wh-border-gold);
+  border-right: 1px solid var(--wh-border-gold);
+  border-top: 1px solid var(--wh-border);
+  background: var(--wh-bg-card);
+}
+.wh-item-entry:first-child {
+  border-top-color: var(--wh-border-gold);
+  border-radius: 4px 4px 0 0;
+}
+.wh-item-entry:last-child {
+  border-bottom: 1px solid var(--wh-border-gold);
+  border-radius: 0 0 4px 4px;
+}
+.wh-item-entry:hover { background: var(--wh-bg-card-alt); }
+
+.wh-item-name  { font-family: 'Cinzel', serif; font-size: .95rem; }
+.wh-item-desc  { color: #cfc0a0; font-size: .9rem; line-height: 1.6; }
+.wh-item-meta  { font-size: .8rem; color: #b0985e; }
+
+/* Type badges — WH-styled, no Bootstrap */
+.badge-wh-basic {
+  display: inline-block;
+  background: #0f2e14;
+  border: 1px solid #2a6030;
+  color: #7fd490;
+  font-size: .73rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  letter-spacing: .3px;
+  vertical-align: middle;
+}
+.badge-wh-advanced {
+  display: inline-block;
+  background: #2e1e00;
+  border: 1px solid #6b4400;
+  color: #d4a030;
+  font-size: .73rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  letter-spacing: .3px;
+  vertical-align: middle;
+}
+
+/* Filter bar */
+.wh-filter-bar {
+  background: var(--wh-bg-card);
+  border: 1px solid var(--wh-border-gold);
+  border-radius: 4px;
+  padding: .6rem 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .6rem;
+}
+.wh-filter-bar .form-check-label,
+.wh-filter-bar label { color: var(--wh-text); font-size: .85rem; }
+.wh-filter-bar .form-check-input:checked { background-color: var(--wh-gold-dark); border-color: var(--wh-gold); }
+.wh-filter-bar select.wh-input { padding: .2rem .6rem; font-size: .85rem; height: auto; }
+
+/* Search input highlight */
+mark { background: rgba(200,169,81,.25); color: var(--wh-gold-light); padding: 0 2px; border-radius: 2px; }
+
+/* ---- Bootstrap overrides for dark theme ---- */
+
+/* text-muted: Bootstrap's #6c757d has ~3:1 contrast on WH dark backgrounds — too low */
+.text-muted { color: #a08f72 !important; }
+
+/* btn-outline-secondary: Bootstrap gray is invisible on dark backgrounds */
+.btn-outline-secondary {
+  color: var(--wh-text) !important;
+  border-color: var(--wh-border-gold) !important;
+  background: transparent;
+}
+.btn-outline-secondary:hover,
+.btn-outline-secondary:focus,
+.btn-outline-secondary:active,
+.btn-outline-secondary.active {
+  background-color: var(--wh-bg-card-alt) !important;
+  color: var(--wh-gold-light) !important;
+  border-color: var(--wh-gold-dark) !important;
+}
+
+/* dropdown-toggle caret inherits correct color from btn-outline-secondary above */
+.dropdown-toggle::after { border-top-color: inherit; }
+
+/* Dropdown menus */
+.dropdown-menu {
+  background-color: var(--wh-bg-card);
+  border: 1px solid var(--wh-border-gold);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.6);
+  min-width: 10rem;
+}
+.dropdown-item {
+  color: var(--wh-text);
+  font-size: 0.88rem;
+  padding: 0.4rem 1rem;
+}
+.dropdown-item:hover,
+.dropdown-item:focus {
+  background-color: var(--wh-bg-card-alt);
+  color: var(--wh-gold-light);
+}
+.dropdown-divider { border-color: var(--wh-border-gold); }
+
 /* ---- Responsive tweaks ---- */
 @media (max-width: 768px) {
   .wh-stat-number { font-size: 1.8rem; }

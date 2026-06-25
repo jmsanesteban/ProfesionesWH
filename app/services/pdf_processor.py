@@ -1,19 +1,19 @@
 """
 PDF processing service.
 
-Pipeline:
-  1. Try to extract embedded text with PyMuPDF.
-  2. If a page looks like a scan (text below threshold), convert to image and run Tesseract OCR.
-  3. Detect language; translate to Spanish if needed.
-  4. Parse each page's text with a heuristic state-machine to extract profession data.
-  5. Return a list of raw parsed-profession dicts ready for admin review.
+Architecture (per page):
+  1. Extract text (digital) or OCR (scanned) → for sections and translation.
+  2. Extract word-level positions → detect and parse the stat table by row alignment,
+     bypassing the flat-text problem that loses table structure.
+  3. Extract labeled sections (Skills, Talents, Trappings, Entries, Exits) from text.
+  4. Translate to Spanish if needed.
+  5. Emit one profession entry per page that looks like a career page
+     (has stats AND at least one content section).
 """
 
-import io
 import logging
-import os
 import re
-import tempfile
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
@@ -33,29 +33,83 @@ except ImportError:
 
 try:
     import pytesseract
-    from PIL import Image
+    from PIL import Image  # noqa: F401
     TESSERACT_AVAILABLE = True
 except ImportError:
     TESSERACT_AVAILABLE = False
     logger.warning("pytesseract / Pillow not available – OCR disabled.")
 
-from app.services.translation_service import translate_to_spanish, needs_translation
+from app.services.translation_service import (
+    translate_to_spanish, needs_translation, force_translate_to_spanish
+)
 
-_MIN_TEXT_LENGTH = 50  # characters per page below which we assume it's a scan
+_MIN_TEXT_LENGTH = 50  # chars per page below which we assume it is a scan
+
+
+# ---------------------------------------------------------------------------
+# Stat table mappings
+# ---------------------------------------------------------------------------
+
+_PRIMARY_MAP = {
+    'HA': 'ws',  'WS': 'ws',
+    'HP': 'bs',  'BS': 'bs',
+    'F':  's_char', 'S': 's_char',
+    'R':  't_char', 'T': 't_char',
+    'AG': 'ag',
+    'I':  'int_char', 'INT': 'int_char',
+    'V':  'wp',  'WP': 'wp',
+    'EM': 'fel', 'FEL': 'fel',
+}
+
+_SECONDARY_MAP = {
+    'A':   'attacks',
+    'H':   'wounds',   'W':   'wounds',
+    'BF':  'strength_bonus',  'SB':  'strength_bonus',
+    'BR':  'toughness_bonus', 'TB':  'toughness_bonus',
+    'M':   'movement',
+    'MAG': 'magic',
+    'PL':  'insanity_points', 'IP':  'insanity_points',
+    'PD':  'fate_points',     'FP':  'fate_points',
+}
+
+_ALL_STAT_KEYS = frozenset(_PRIMARY_MAP) | frozenset(_SECONDARY_MAP)
+
+_RE_VALUE   = re.compile(r'[+\-]?\s*\d+')
+_RE_DASH    = re.compile(r'^[-—–]+$')
+
+# ---------------------------------------------------------------------------
+# Section regexes
+# ---------------------------------------------------------------------------
+
+_RE_SECTION = {
+    'skills':    re.compile(r'^(?:habilidades?|sk\w+s?)\s*:', re.IGNORECASE | re.MULTILINE),
+    'talents':   re.compile(r'^(?:talentos?|talents?)\s*:', re.IGNORECASE | re.MULTILINE),
+    'trappings': re.compile(r'^(?:enseres?|trappings?)\s*:', re.IGNORECASE | re.MULTILINE),
+    'entries':   re.compile(r'^(?:accesos?|entradas?|career\s+entr(?:y|ies))\s*:', re.IGNORECASE | re.MULTILINE),
+    'exits':     re.compile(r'^(?:salidas?|career\s+exits?)\s*:', re.IGNORECASE | re.MULTILINE),
+}
+_SECTION_ORDER = ['skills', 'talents', 'trappings', 'entries', 'exits']
+
+# Junk at the start of OCR-extracted name lines: page numbers, decorations
+_RE_LEADING_JUNK = re.compile(r'^[\d.\s\-–—♦•★◆▶▸·]+')
+
+# OCR often splits a capital letter from the rest of its word: "A Nimal" → "Animal"
+_RE_SPLIT_LETTER = re.compile(r'\b([A-Z])\s+([A-Z][a-z]{2,})')
 
 
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def process_pdf(file_bytes: bytes) -> dict:
+def process_pdf(file_bytes: bytes, progress_cb=None) -> dict:
     """
-    Process a PDF binary and return:
+    Process a PDF binary.  Returns:
       {
-        'pages': [{'page': int, 'text': str, 'translated': bool}, ...],
-        'professions': [parsed_profession_dict, ...],
-        'errors': [str, ...],
+        'pages':       [{'page': int, 'text': str, 'translated': bool}, ...],
+        'professions': [profession_dict, ...],
+        'errors':      [str, ...],
       }
+    progress_cb(percent, stage) is called after each page when provided.
     """
     result = {'pages': [], 'professions': [], 'errors': []}
 
@@ -69,288 +123,322 @@ def process_pdf(file_bytes: bytes) -> dict:
         result['errors'].append(f"Error al abrir el PDF: {e}")
         return result
 
-    full_text_parts = []
+    total_pages = len(doc)
 
-    for page_num in range(len(doc)):
-        page = doc[page_num]
-        text = page.get_text("text").strip()
+    for page_num in range(total_pages):
+        page     = doc[page_num]
+        raw_text = page.get_text("text").strip()
+        is_scan  = len(raw_text) < _MIN_TEXT_LENGTH
 
-        if len(text) < _MIN_TEXT_LENGTH:
-            # Scanned page – try OCR
-            text = _ocr_page(file_bytes, page_num)
+        # ---- 1. Text + word-row extraction ----
+        if is_scan:
+            if progress_cb:
+                progress_cb(
+                    5 + int(page_num / total_pages * 75),
+                    f'OCR página {page_num + 1} de {total_pages}…'
+                )
+            text, word_rows = _ocr_page(file_bytes, page_num)
+        else:
+            if progress_cb:
+                progress_cb(
+                    5 + int(page_num / total_pages * 75),
+                    f'Extrayendo página {page_num + 1} de {total_pages}…'
+                )
+            text      = raw_text
+            word_rows = _digital_word_rows(page)
 
+        # ---- 2. Translation ----
         if needs_translation(text):
-            translated = translate_to_spanish(text)
+            if progress_cb:
+                progress_cb(
+                    5 + int(page_num / total_pages * 75),
+                    f'Traduciendo página {page_num + 1} de {total_pages}…'
+                )
+            text           = translate_to_spanish(text)
             was_translated = True
         else:
-            translated = text
             was_translated = False
 
         result['pages'].append({
-            'page': page_num + 1,
-            'text': translated,
+            'page':       page_num + 1,
+            'text':       text,
             'translated': was_translated,
         })
-        full_text_parts.append(translated)
 
-    full_text = '\n\n--- PÁGINA ---\n\n'.join(full_text_parts)
-    result['professions'] = parse_professions(full_text)
+        # ---- 3. Stat extraction (positional) ----
+        stats = _extract_stats(word_rows)
+
+        # ---- 4. Section extraction (text-based) ----
+        sections = _parse_sections(text)
+
+        # ---- 5. Emit profession entry if this is a career page ----
+        if _is_career_page(stats, sections):
+            prof_type = (
+                'advanced'
+                if re.search(r'\bavan[cz]ad[ao]\b|\badvanced\b', text, re.IGNORECASE)
+                else 'basic'
+            )
+            raw_name = _fix_ocr_name(_extract_name(page, text, is_scan))
+            if was_translated and raw_name:
+                # Page was in English: store English original + translate for Spanish
+                name_en = raw_name
+                name_es = force_translate_to_spanish(raw_name) or raw_name
+            else:
+                name_es = raw_name
+                name_en = ''
+
+            result['professions'].append({
+                'name':        name_es,
+                'name_en':     name_en,
+                'type':        prof_type,
+                'description': '',
+                **_empty_stats(),
+                **stats,
+                **sections,
+            })
+
+        if progress_cb:
+            progress_cb(
+                5 + int((page_num + 1) / total_pages * 75),
+                f'Procesada página {page_num + 1} de {total_pages}'
+            )
 
     doc.close()
     return result
 
 
-def _ocr_page(file_bytes: bytes, page_index: int) -> str:
-    """Convert a single PDF page to image and run Tesseract."""
+# ---------------------------------------------------------------------------
+# Text / OCR extraction
+# ---------------------------------------------------------------------------
+
+def _ocr_page(file_bytes: bytes, page_index: int):
+    """Return (text, sorted_word_rows) via a single Tesseract call."""
     if not PDF2IMAGE_AVAILABLE or not TESSERACT_AVAILABLE:
-        return ''
+        return '', []
     try:
-        images = convert_from_bytes(file_bytes, first_page=page_index + 1, last_page=page_index + 1, dpi=300)
+        images = convert_from_bytes(
+            file_bytes, first_page=page_index + 1, last_page=page_index + 1, dpi=300
+        )
         if not images:
-            return ''
-        text = pytesseract.image_to_string(images[0], lang='spa+eng')
-        return text.strip()
+            return '', []
+
+        from pytesseract import Output
+        data = pytesseract.image_to_data(
+            images[0], lang='spa+eng', output_type=Output.DICT
+        )
+
+        rows_dict  = defaultdict(list)
+        text_lines = defaultdict(list)
+
+        for i in range(len(data['text'])):
+            word = data['text'][i].strip()
+            conf_raw = str(data['conf'][i])
+            conf = int(conf_raw) if conf_raw.lstrip('-').isdigit() else -1
+            if not word or conf < 20:
+                continue
+            line_key = (data['block_num'][i], data['par_num'][i], data['line_num'][i])
+            text_lines[line_key].append(word)
+            y_center = data['top'][i] + data['height'][i] // 2
+            rows_dict[round(y_center / 15) * 15].append((data['left'][i], word))
+
+        text = '\n'.join(' '.join(text_lines[k]) for k in sorted(text_lines))
+        sorted_rows = [
+            [w for _, w in sorted(rows_dict[k])]
+            for k in sorted(rows_dict)
+        ]
+        return text, sorted_rows
+
     except Exception as e:
-        logger.warning(f"OCR failed on page {page_index + 1}: {e}")
-        return ''
+        logger.warning("OCR failed on page %d: %s", page_index + 1, e)
+        return '', []
+
+
+def _digital_word_rows(page) -> list:
+    """Extract word positions from a digital PDF page using PyMuPDF."""
+    try:
+        words = page.get_text("words")
+        # words: (x0, y0, x1, y1, word, block, line, word_idx)
+        rows_dict = defaultdict(list)
+        for w in words:
+            x0, y0, x1, y1, word = w[:5]
+            word = word.strip()
+            if not word:
+                continue
+            y_center = (y0 + y1) / 2
+            rows_dict[round(y_center / 8) * 8].append((x0, word))
+        return [
+            [w for _, w in sorted(rows_dict[k])]
+            for k in sorted(rows_dict)
+        ]
+    except Exception as e:
+        logger.warning("Word extraction failed: %s", e)
+        return []
 
 
 # ---------------------------------------------------------------------------
-# Heuristic profession parser
+# Stat extraction (positional)
 # ---------------------------------------------------------------------------
-
-_RE_SECTION = {
-    'main_profile': re.compile(
-        r'(perfil\s+principal|main\s+profile|características\s+primarias)',
-        re.IGNORECASE
-    ),
-    'secondary_profile': re.compile(
-        r'(perfil\s+secundario|secondary\s+profile|características\s+secundarias)',
-        re.IGNORECASE
-    ),
-    'skills': re.compile(r'^(habilidades?|skills?)\s*:', re.IGNORECASE | re.MULTILINE),
-    'talents': re.compile(r'^(talentos?|talents?)\s*:', re.IGNORECASE | re.MULTILINE),
-    'trappings': re.compile(r'^(enseres?|trappings?)\s*:', re.IGNORECASE | re.MULTILINE),
-    'entries': re.compile(r'^(accesos?|entradas?|career\s+entr(?:y|ies))\s*:', re.IGNORECASE | re.MULTILINE),
-    'exits': re.compile(r'^(salidas?|career\s+exits?)\s*:', re.IGNORECASE | re.MULTILINE),
-}
-
-# Primary characteristic headers in Spanish abbreviations and common OCR variants
-_PRIMARY_HEADERS = ('HA', 'HP', 'F', 'R', 'Ag', 'I', 'V', 'Em',
-                    'WS', 'BS', 'S', 'T', 'Int', 'WP', 'Fel')
-
-_SECONDARY_HEADERS = ('A', 'H', 'BF', 'BR', 'M', 'Mag', 'PL', 'PD',
-                       'W', 'SB', 'TB', 'IP', 'FP')
-
-# Map Spanish/English abbreviations → internal field names
-_PRIMARY_MAP = {
-    'HA': 'ws', 'WS': 'ws',
-    'HP': 'bs', 'BS': 'bs',
-    'F': 's_char', 'S': 's_char',
-    'R': 't_char', 'T': 't_char',
-    'AG': 'ag',
-    'I': 'int_char', 'INT': 'int_char',
-    'V': 'wp', 'WP': 'wp',
-    'EM': 'fel', 'FEL': 'fel',
-}
-
-_SECONDARY_MAP = {
-    'A': 'attacks',
-    'H': 'wounds', 'W': 'wounds',
-    'BF': 'strength_bonus', 'SB': 'strength_bonus',
-    'BR': 'toughness_bonus', 'TB': 'toughness_bonus',
-    'M': 'movement',
-    'MAG': 'magic',
-    'PL': 'insanity_points', 'IP': 'insanity_points',
-    'PD': 'fate_points', 'FP': 'fate_points',
-}
-
-_RE_VALUE = re.compile(r'[+\-]?\s*\d+')
-_RE_DASH = re.compile(r'^[-—–]+$')
-
 
 def _parse_value(token: str):
-    """Parse a characteristic value token like '+5', '—', '-', '+10'."""
+    """Parse '+25%', '—', '-', '+6' → int or None."""
     token = token.strip()
     if _RE_DASH.match(token) or token == '':
         return None
     m = _RE_VALUE.search(token)
-    if m:
-        return int(m.group().replace(' ', ''))
-    return None
+    return int(m.group().replace(' ', '')) if m else None
 
 
-def _extract_section_text(text: str, start_pattern, end_patterns) -> str:
-    """Extract text between start_pattern and the first match of any end_pattern."""
-    m_start = start_pattern.search(text)
-    if not m_start:
-        return ''
-    start = m_start.end()
-    end = len(text)
-    for ep in end_patterns:
-        m_end = ep.search(text, start)
-        if m_end and m_end.start() < end:
-            end = m_end.start()
-    return text[start:end].strip()
-
-
-def _parse_characteristic_table(header_line: str, value_line: str, mapping: dict) -> dict:
-    """Parse two-line table: headers | values → {field: int_or_None}"""
-    headers = [h.strip().upper() for h in re.split(r'\s+', header_line.strip()) if h.strip()]
-    values_raw = re.split(r'\s+', value_line.strip())
+def _parse_row_pair(header_row: list, value_row: list, mapping: dict) -> dict:
+    """Map header[i] → field, value[i] → int, using direct index alignment."""
     result = {}
-    for i, header in enumerate(headers):
-        field = mapping.get(header)
-        if field and i < len(values_raw):
-            result[field] = _parse_value(values_raw[i])
+    for i, header in enumerate(header_row):
+        field = mapping.get(header.upper())
+        if field and i < len(value_row):
+            result[field] = _parse_value(value_row[i])
     return result
 
 
-def _parse_list_section(text: str) -> list:
-    """Split a comma/semicolon-separated list, preserving 'A o B' groups."""
-    items = re.split(r'[,;]', text)
-    return [item.strip() for item in items if item.strip()]
-
-
-def parse_professions(text: str) -> list:
+def _extract_stats(sorted_rows: list) -> dict:
     """
-    Very best-effort parser for WFRP2-style profession pages.
-    Returns a list of dicts, each representing one profession found in the text.
-    Fields may be None/empty when not detected.
+    Scan word rows for a stat header line (≥3 known abbreviations that make up
+    ≥60% of the line's words) then read values from the very next row.
+    Works identically for digital-PDF and OCR word rows.
     """
-    professions = []
+    primary_result   = {}
+    secondary_result = {}
 
-    # Split by possible profession delimiters (page breaks, ALL-CAPS lines)
-    blocks = _split_into_blocks(text)
+    for i, row in enumerate(sorted_rows):
+        if i + 1 >= len(sorted_rows) or not row:
+            continue
 
-    for block in blocks:
-        prof = _parse_block(block)
-        if prof and prof.get('name'):
-            professions.append(prof)
+        upper = [w.upper() for w in row]
+        n     = len(upper)
+        stat_frac    = sum(1 for w in upper if w in _ALL_STAT_KEYS) / n
+        primary_hits = sum(1 for w in upper if w in _PRIMARY_MAP)
+        sec_hits     = sum(1 for w in upper if w in _SECONDARY_MAP)
 
-    return professions
+        next_row = sorted_rows[i + 1]
 
+        if primary_hits >= 3 and stat_frac >= 0.6 and not primary_result:
+            parsed = _parse_row_pair(row, next_row, _PRIMARY_MAP)
+            if any(v is not None for v in parsed.values()):
+                primary_result = parsed
 
-def _split_into_blocks(text: str) -> list:
-    """Split text into potential per-profession blocks."""
-    # Strategy: split on lines that are entirely UPPERCASE (potential profession names)
-    lines = text.split('\n')
-    blocks = []
-    current = []
-    for line in lines:
-        stripped = line.strip()
-        if (stripped
-                and stripped == stripped.upper()
-                and len(stripped) > 3
-                and not any(h in stripped.split() for h in _PRIMARY_HEADERS + _SECONDARY_HEADERS)
-                and not stripped.startswith('---')):
-            if current:
-                blocks.append('\n'.join(current))
-            current = [line]
-        else:
-            current.append(line)
-    if current:
-        blocks.append('\n'.join(current))
-    return [b for b in blocks if b.strip()]
+        if sec_hits >= 3 and stat_frac >= 0.6 and not secondary_result:
+            parsed = _parse_row_pair(row, next_row, _SECONDARY_MAP)
+            if any(v is not None for v in parsed.values()):
+                secondary_result = parsed
+
+    return {**primary_result, **secondary_result}
 
 
-def _parse_block(block: str) -> dict:
-    """Parse a single text block as one profession."""
-    lines = [l.rstrip() for l in block.split('\n')]
-    if not lines:
-        return {}
-
-    prof = {
-        'name': '',
-        'name_en': '',
-        'type': 'basic',
-        'description': '',
+def _empty_stats() -> dict:
+    return {
         'ws': None, 'bs': None, 's_char': None, 't_char': None,
         'ag': None, 'int_char': None, 'wp': None, 'fel': None,
         'attacks': None, 'wounds': None, 'strength_bonus': None,
         'toughness_bonus': None, 'movement': None, 'magic': None,
         'insanity_points': None, 'fate_points': None,
-        'skills_raw': '',
-        'talents_raw': '',
-        'trappings_raw': '',
-        'entries_raw': '',
-        'exits_raw': '',
     }
 
-    # First non-empty line is the profession name
-    for line in lines:
-        if line.strip():
-            prof['name'] = line.strip().title()
-            break
 
-    text = block
+# ---------------------------------------------------------------------------
+# Section extraction (text-based — already works well)
+# ---------------------------------------------------------------------------
 
-    # Determine basic/advanced
-    if re.search(r'\bavan[cz]ad[ao]\b|\badvanced\b', text, re.IGNORECASE):
-        prof['type'] = 'advanced'
-
-    # Find main profile
-    m_main = _RE_SECTION['main_profile'].search(text)
-    m_secondary = _RE_SECTION['secondary_profile'].search(text)
-    m_skills = _RE_SECTION['skills'].search(text)
-
-    if m_main:
-        # Next two non-empty lines after the header: headers row + values row
-        segment = text[m_main.end():]
-        non_empty = [l.strip() for l in segment.split('\n') if l.strip()][:2]
-        if len(non_empty) == 2:
-            parsed = _parse_characteristic_table(non_empty[0], non_empty[1], _PRIMARY_MAP)
-            prof.update(parsed)
-
-    if m_secondary:
-        segment = text[m_secondary.end():]
-        non_empty = [l.strip() for l in segment.split('\n') if l.strip()][:2]
-        if len(non_empty) == 2:
-            parsed = _parse_characteristic_table(non_empty[0], non_empty[1], _SECONDARY_MAP)
-            prof.update(parsed)
-
-    # Skills
-    m = _RE_SECTION['skills'].search(text)
-    if m:
+def _parse_sections(text: str) -> dict:
+    """Extract Skills, Talents, Trappings, Entries, Exits from page text."""
+    sections = {k + '_raw': '' for k in _SECTION_ORDER}
+    for idx, key in enumerate(_SECTION_ORDER):
+        m = _RE_SECTION[key].search(text)
+        if not m:
+            continue
         end = len(text)
-        for key in ('talents', 'trappings', 'entries', 'exits'):
-            nm = _RE_SECTION[key].search(text, m.end())
+        for later in _SECTION_ORDER[idx + 1:]:
+            nm = _RE_SECTION[later].search(text, m.end())
             if nm and nm.start() < end:
                 end = nm.start()
-        prof['skills_raw'] = text[m.end():end].strip().strip(':').strip()
+        sections[key + '_raw'] = text[m.end():end].strip().strip(':').strip()
+    return sections
 
-    # Talents
-    m = _RE_SECTION['talents'].search(text)
-    if m:
-        end = len(text)
-        for key in ('trappings', 'entries', 'exits'):
-            nm = _RE_SECTION[key].search(text, m.end())
-            if nm and nm.start() < end:
-                end = nm.start()
-        prof['talents_raw'] = text[m.end():end].strip().strip(':').strip()
 
-    # Trappings
-    m = _RE_SECTION['trappings'].search(text)
-    if m:
-        end = len(text)
-        for key in ('entries', 'exits'):
-            nm = _RE_SECTION[key].search(text, m.end())
-            if nm and nm.start() < end:
-                end = nm.start()
-        prof['trappings_raw'] = text[m.end():end].strip().strip(':').strip()
+# ---------------------------------------------------------------------------
+# Career page detection & name extraction
+# ---------------------------------------------------------------------------
 
-    # Entries
-    m = _RE_SECTION['entries'].search(text)
-    if m:
-        end = len(text)
-        nm = _RE_SECTION['exits'].search(text, m.end())
-        if nm:
-            end = nm.start()
-        prof['entries_raw'] = text[m.end():end].strip().strip(':').strip()
+def _is_career_page(stats: dict, sections: dict) -> bool:
+    """
+    Only emit a profession entry when the page has BOTH positional stats AND
+    at least one meaningful content section.  This prevents career-summary
+    tables (stats but no sections) and lore pages (sections but no stats)
+    from generating false entries.
+    """
+    has_stats = any(v is not None for v in stats.values())
+    has_sections = (
+        len(sections.get('skills_raw', '').strip()) > 10
+        or len(sections.get('talents_raw', '').strip()) > 10
+        or len(sections.get('trappings_raw', '').strip()) > 5
+    )
+    return has_stats and has_sections
 
-    # Exits
-    m = _RE_SECTION['exits'].search(text)
-    if m:
-        prof['exits_raw'] = text[m.end():].strip().strip(':').strip()
 
-    return prof
+def _fix_ocr_name(name: str) -> str:
+    """
+    Repair OCR-split capital letters: 'A Nimal T Rainer' → 'Animal Trainer'.
+    Applied iteratively until stable, then collapses extra spaces.
+    """
+    prev = None
+    while prev != name:
+        prev = name
+        name = _RE_SPLIT_LETTER.sub(
+            lambda m: m.group(1) + m.group(2)[0].lower() + m.group(2)[1:],
+            name,
+        )
+    return re.sub(r'\s{2,}', ' ', name).strip()
+
+
+def _extract_name(page, text: str, is_scan: bool) -> str:
+    """
+    For digital PDFs: return the text of the span with the largest font size.
+    Fallback for all pages: first ALL-CAPS line with ≥3 real letters.
+    """
+    if not is_scan:
+        try:
+            page_dict = page.get_text("dict")
+            max_size  = 0
+            candidate = ''
+            for block in page_dict.get('blocks', []):
+                if block.get('type') != 0:
+                    continue
+                for line in block.get('lines', []):
+                    for span in line.get('spans', []):
+                        size      = span.get('size', 0)
+                        span_text = span.get('text', '').strip()
+                        if size > max_size and sum(1 for c in span_text if c.isalpha()) >= 2:
+                            max_size  = size
+                            candidate = ' '.join(
+                                s.get('text', '') for s in line.get('spans', [])
+                            ).strip()
+            if candidate and sum(1 for c in candidate if c.isalpha()) >= 2:
+                return candidate.title()
+        except Exception:
+            pass
+
+    # Fallback: first ALL-CAPS line of reasonable length
+    for line in text.split('\n'):
+        cleaned = _RE_LEADING_JUNK.sub('', line.strip()).strip()
+        if (cleaned
+                and cleaned == cleaned.upper()
+                and sum(1 for c in cleaned if c.isalpha()) >= 3
+                and len(cleaned.split()) <= 6):
+            return cleaned.title()
+
+    return ''
+
+
+# ---------------------------------------------------------------------------
+# Kept for backwards compatibility (no longer called by process_pdf)
+# ---------------------------------------------------------------------------
+
+def parse_professions(text: str) -> list:
+    return []

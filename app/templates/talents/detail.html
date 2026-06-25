@@ -19,8 +19,6 @@
       {% endif %}
     </div>
     <div class="card-body">
-      {% if talent.name_en %}<p class="text-muted"><em>{{ talent.name_en }}</em></p>{% endif %}
-      <p><small class="wh-label">Máximo: {{ talent.max_times }} vez/veces</small></p>
       {% if talent.description %}<p class="wh-description">{{ talent.description }}</p>{% endif %}
     </div>
   </div>
@@ -32,9 +30,11 @@
       <a href="{{ url_for('professions.detail', prof_id=prof.id) }}" class="text-decoration-none">
         <div class="card wh-card-sm text-center p-2">
           <small class="wh-name">{{ prof.name }}</small>
-          <span class="badge {% if prof.type=='basic' %}bg-success{% else %}bg-warning text-dark{% endif %} mt-1">
-            {{ 'Básica' if prof.type=='basic' else 'Avanzada' }}
-          </span>
+          {% if prof.type == 'basic' %}
+          <span class="badge-wh-basic mt-1">Básica</span>
+          {% else %}
+          <span class="badge-wh-advanced mt-1">Avanzada</span>
+          {% endif %}
         </div>
       </a>
     </div>

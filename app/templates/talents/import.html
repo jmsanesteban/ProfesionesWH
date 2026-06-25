@@ -1,0 +1,60 @@
+{% extends 'base.html' %}
+{% block title %}Importar Talentos — Admin WH{% endblock %}
+
+{% block content %}
+<div class="container mt-4" style="max-width:700px">
+  <h2 class="wh-heading mb-4"><i class="bi bi-upload me-2"></i>Importar Talentos</h2>
+
+  <div class="card wh-card mb-4">
+    <div class="card-header wh-card-header">Formato de texto (.txt)</div>
+    <div class="card-body">
+      <p class="wh-description small mb-2">Bloques separados por una línea en blanco:</p>
+      <pre class="wh-pre-text small">Nombre: ¡A CORRER!
+Descripción: Cuando tu vida está en peligro puedes alcanzar velocidades de vértigo…
+
+Nombre: AMBIDIESTRO
+Descripción: Puedes usar ambas manos con la misma habilidad…</pre>
+    </div>
+  </div>
+
+  <div class="card wh-card mb-4">
+    <div class="card-header wh-card-header">Formato CSV / Excel</div>
+    <div class="card-body">
+      <p class="wh-description small">Columnas (primera fila = cabecera):</p>
+      <code class="small">nombre, descripcion</code>
+    </div>
+  </div>
+
+  <div class="card wh-card">
+    <div class="card-body">
+      <form method="POST" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+        <div class="mb-3">
+          <label class="form-label wh-label">Fichero (.txt / .csv / .xlsx)</label>
+          <input type="file" name="file" class="form-control wh-input" accept=".txt,.csv,.xlsx,.xls" required>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label wh-label">Si el talento ya existe…</label>
+          <div class="d-flex gap-3">
+            <div class="form-check">
+              <input class="form-check-input" type="radio" name="mode" value="skip" id="mode_skip" checked>
+              <label class="form-check-label wh-label" for="mode_skip">Omitir (no modificar)</label>
+            </div>
+            <div class="form-check">
+              <input class="form-check-input" type="radio" name="mode" value="update" id="mode_update">
+              <label class="form-check-label wh-label" for="mode_update">Actualizar descripción</label>
+            </div>
+          </div>
+        </div>
+
+        <div class="d-flex gap-2">
+          <button type="submit" class="btn btn-wh"><i class="bi bi-upload me-1"></i>Importar</button>
+          <a href="{{ url_for('skills_talents.list_talents') }}" class="btn btn-outline-secondary">Cancelar</a>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

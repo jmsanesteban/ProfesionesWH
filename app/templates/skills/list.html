@@ -3,53 +3,155 @@
 
 {% block content %}
 <div class="container mt-4">
+
+  {# ── Header ── #}
   <div class="d-flex justify-content-between align-items-center mb-3">
-    <h2 class="wh-heading"><i class="bi bi-book me-2"></i>Habilidades</h2>
+    <h2 class="wh-heading">
+      <i class="bi bi-book me-2"></i>Habilidades
+      <span class="text-muted fs-6 ms-1">({{ skills|length }}{% if tipo or caract or search %} filtradas{% endif %})</span>
+    </h2>
     {% if current_user.is_authenticated and current_user.is_admin %}
-    <a href="{{ url_for('skills_talents.create_skill') }}" class="btn btn-wh btn-sm">
-      <i class="bi bi-plus-circle me-1"></i>Nueva
-    </a>
+    <div class="d-flex gap-2 flex-wrap">
+      <a href="{{ url_for('skills_talents.import_skills') }}" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-upload me-1"></i>Importar
+      </a>
+      <div class="dropdown">
+        <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown">
+          <i class="bi bi-download me-1"></i>Exportar
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end">
+          <li><a class="dropdown-item" href="{{ url_for('skills_talents.export_skills', f='txt') }}">Texto (.txt)</a></li>
+          <li><a class="dropdown-item" href="{{ url_for('skills_talents.export_skills', f='csv') }}">CSV (.csv)</a></li>
+          <li><a class="dropdown-item" href="{{ url_for('skills_talents.export_skills', f='xlsx') }}">Excel (.xlsx)</a></li>
+        </ul>
+      </div>
+      <a href="{{ url_for('skills_talents.create_skill') }}" class="btn btn-wh btn-sm">
+        <i class="bi bi-plus-circle me-1"></i>Nueva
+      </a>
+    </div>
     {% endif %}
   </div>
 
-  <form method="GET" class="d-flex gap-2 mb-4">
-    <input type="text" name="q" class="form-control wh-input" placeholder="Buscar habilidad…" value="{{ search }}">
-    <button class="btn btn-wh" type="submit"><i class="bi bi-search"></i></button>
-    {% if search %}<a href="{{ url_for('skills_talents.list_skills') }}" class="btn btn-outline-secondary"><i class="bi bi-x-lg"></i></a>{% endif %}
+  {# ── Search + filters ── #}
+  <form method="GET" id="filter-form">
+    <div class="d-flex gap-2 mb-2">
+      <input type="text" name="q" id="q-input" class="form-control wh-input"
+             placeholder="Buscar habilidad…" value="{{ search }}" autocomplete="off">
+      <button class="btn btn-wh px-3" type="submit"><i class="bi bi-search"></i></button>
+      {% if search or tipo or caract %}
+      <a href="{{ url_for('skills_talents.list_skills') }}" class="btn btn-outline-secondary" title="Limpiar filtros">
+        <i class="bi bi-x-lg"></i>
+      </a>
+      {% endif %}
+    </div>
+
+    <div class="wh-filter-bar mb-4">
+      {# Search scope #}
+      <div class="d-flex gap-3 align-items-center">
+        <div class="form-check mb-0">
+          <input class="form-check-input" type="radio" name="search_all" id="s_name" value="0"
+                 {% if not search_all %}checked{% endif %} onchange="this.form.submit()">
+          <label class="form-check-label" for="s_name">Solo nombre</label>
+        </div>
+        <div class="form-check mb-0">
+          <input class="form-check-input" type="radio" name="search_all" id="s_all" value="1"
+                 {% if search_all %}checked{% endif %} onchange="this.form.submit()">
+          <label class="form-check-label" for="s_all">Todos los campos</label>
+        </div>
+      </div>
+
+      <div class="vr" style="background:var(--wh-border-gold);opacity:.4"></div>
+
+      {# Tipo filter #}
+      <div class="d-flex align-items-center gap-2">
+        <label class="wh-label mb-0" style="white-space:nowrap">Tipo:</label>
+        <select name="tipo" class="form-select wh-input" style="width:auto" onchange="this.form.submit()">
+          <option value=""       {% if not tipo     %}selected{% endif %}>Todas</option>
+          <option value="basic"  {% if tipo=='basic'    %}selected{% endif %}>Básica</option>
+          <option value="advanced" {% if tipo=='advanced' %}selected{% endif %}>Avanzada</option>
+        </select>
+      </div>
+
+      {# Característica filter #}
+      {% if all_caracts %}
+      <div class="d-flex align-items-center gap-2">
+        <label class="wh-label mb-0" style="white-space:nowrap">Característica:</label>
+        <select name="caract" class="form-select wh-input" style="width:auto" onchange="this.form.submit()">
+          <option value="">Todas</option>
+          {% for c in all_caracts %}
+          <option value="{{ c }}" {% if caract == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endif %}
+    </div>
   </form>
 
+  {# ── Results ── #}
   {% if skills %}
-  <div class="table-responsive">
-    <table class="table wh-table">
-      <thead>
-        <tr><th>Nombre (ES)</th><th>Nombre (EN)</th><th>Tipo</th><th>Descripción</th><th></th></tr>
-      </thead>
-      <tbody>
-        {% for skill in skills %}
-        <tr>
-          <td><a href="{{ url_for('skills_talents.skill_detail', skill_id=skill.id) }}" class="wh-link fw-bold">{{ skill.name_es }}</a></td>
-          <td class="text-muted">{{ skill.name_en or '—' }}</td>
-          <td><span class="badge {% if skill.is_advanced %}bg-warning text-dark{% else %}bg-success{% endif %}">
-            {{ 'Avanzada' if skill.is_advanced else 'Básica' }}
-          </span></td>
-          <td class="text-muted small">{{ (skill.description or '')[:60] }}{% if skill.description and skill.description|length > 60 %}…{% endif %}</td>
-          <td>
-            {% if current_user.is_authenticated and current_user.is_admin %}
-            <a href="{{ url_for('skills_talents.edit_skill', skill_id=skill.id) }}" class="btn btn-outline-warning btn-sm me-1"><i class="bi bi-pencil"></i></a>
-            <form method="POST" action="{{ url_for('skills_talents.delete_skill', skill_id=skill.id) }}" class="d-inline"
-                  onsubmit="return confirm('¿Eliminar «{{ skill.name_es }}»?')">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <button class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i></button>
-            </form>
+  <div class="wh-item-list">
+    {% for skill in skills %}
+    <div class="wh-item-entry">
+      <div class="d-flex justify-content-between align-items-start gap-3">
+
+        <div class="flex-grow-1 min-w-0">
+          {# Name + tipo #}
+          <div class="d-flex align-items-center gap-2 flex-wrap mb-1">
+            <a href="{{ url_for('skills_talents.skill_detail', skill_id=skill.id) }}"
+               class="wh-link fw-bold wh-item-name">{{ skill.name_es }}</a>
+            {% if skill.is_advanced %}
+            <span class="badge-wh-advanced">Avanzada</span>
+            {% else %}
+            <span class="badge-wh-basic">Básica</span>
             {% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+          </div>
+
+          {# Meta: características + talentos asociados #}
+          {% if skill.caracteristicas or skill.talentos_asociados %}
+          <div class="wh-item-meta mb-1">
+            {% if skill.caracteristicas %}
+            <i class="bi bi-bar-chart-line me-1"></i>{{ skill.caracteristicas }}
+            {% endif %}
+            {% if skill.caracteristicas and skill.talentos_asociados %}
+            &ensp;·&ensp;
+            {% endif %}
+            {% if skill.talentos_asociados %}
+            <i class="bi bi-star me-1"></i>{{ skill.talentos_asociados }}
+            {% endif %}
+          </div>
+          {% endif %}
+
+          {# Full description #}
+          {% if skill.description %}
+          <p class="wh-item-desc mb-0">{{ skill.description }}</p>
+          {% else %}
+          <p class="wh-item-meta mb-0 fst-italic">Sin descripción.</p>
+          {% endif %}
+        </div>
+
+        {% if current_user.is_authenticated and current_user.is_admin %}
+        <div class="d-flex gap-1 flex-shrink-0">
+          <a href="{{ url_for('skills_talents.edit_skill', skill_id=skill.id) }}"
+             class="btn btn-outline-warning btn-sm" title="Editar"><i class="bi bi-pencil"></i></a>
+          <form method="POST" action="{{ url_for('skills_talents.delete_skill', skill_id=skill.id) }}"
+                class="d-inline" onsubmit="return confirm('¿Eliminar «{{ skill.name_es }}»?')">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-outline-danger btn-sm" title="Eliminar"><i class="bi bi-trash"></i></button>
+          </form>
+        </div>
+        {% endif %}
+
+      </div>
+    </div>
+    {% endfor %}
   </div>
   {% else %}
-  <div class="alert alert-info wh-alert">No se encontraron habilidades.</div>
+  <div class="alert wh-alert">
+    No se encontraron habilidades
+    {% if search or tipo or caract %}con los filtros actuales.
+    <a href="{{ url_for('skills_talents.list_skills') }}" class="wh-link">Limpiar filtros</a>{% else %}.{% endif %}
+  </div>
   {% endif %}
+
 </div>
 {% endblock %}

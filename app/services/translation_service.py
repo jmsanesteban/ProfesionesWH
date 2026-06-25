@@ -64,3 +64,15 @@ def translate_to_spanish(text: str) -> str:
 def needs_translation(text: str) -> bool:
     lang = detect_language(text)
     return lang not in ('es', 'unknown', '')
+
+
+def force_translate_to_spanish(text: str) -> str:
+    """Translate to Spanish bypassing language detection (use when source is known non-Spanish)."""
+    if not text or not TRANSLATOR_AVAILABLE:
+        return text
+    try:
+        translator = GoogleTranslator(source='auto', target='es')
+        return translator.translate(text) or text
+    except Exception as e:
+        logger.warning(f"Force translation failed: {e}")
+        return text

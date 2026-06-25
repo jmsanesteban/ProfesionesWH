@@ -1,4 +1,10 @@
+import json
+import logging
 import os
+import tempfile
+import threading
+import time
+import uuid
 from flask import (Blueprint, render_template, redirect, url_for,
                    flash, request, current_app, jsonify)
 from flask_login import login_required
@@ -10,7 +16,58 @@ from app.models.talent import Talent
 from app.utils import admin_required, allowed_file
 from app.services.pdf_processor import process_pdf
 
+logger = logging.getLogger(__name__)
+
 admin_bp = Blueprint('admin', __name__, template_folder='../templates')
+
+# ---------------------------------------------------------------------------
+# Async PDF job management (file-based state, cross-worker safe)
+# ---------------------------------------------------------------------------
+
+_JOBS_DIR = os.path.join(tempfile.gettempdir(), 'wh_pdf_jobs')
+os.makedirs(_JOBS_DIR, exist_ok=True)
+
+
+def _job_path(job_id: str) -> str:
+    safe = ''.join(c for c in job_id if c.isalnum() or c == '-')
+    return os.path.join(_JOBS_DIR, f'{safe}.json')
+
+
+def _write_job(job_id: str, data: dict) -> None:
+    path = _job_path(job_id)
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _read_job(job_id: str) -> dict | None:
+    path = _job_path(job_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _run_pdf_job(job_id: str, file_bytes: bytes) -> None:
+    def progress_cb(percent: int, stage: str) -> None:
+        job = _read_job(job_id) or {}
+        job.update(percent=percent, stage=stage)
+        _write_job(job_id, job)
+
+    try:
+        result = process_pdf(file_bytes, progress_cb=progress_cb)
+        job = _read_job(job_id) or {}
+        job.update(percent=100, stage='Completado', done=True, result=result)
+        _write_job(job_id, job)
+    except Exception as e:
+        logger.error('PDF job %s failed: %s', job_id, e, exc_info=True)
+        job = _read_job(job_id) or {}
+        job.update(done=True, error=str(e), stage='Error')
+        _write_job(job_id, job)
 
 
 @admin_bp.route('/')
@@ -88,34 +145,92 @@ def delete_user(user_id):
 @login_required
 @admin_required
 def pdf_upload():
-    if request.method == 'POST':
-        if 'pdf_file' not in request.files:
-            flash('No se seleccionó ningún archivo.', 'danger')
-            return redirect(request.url)
+    if request.method == 'GET':
+        return render_template('admin/pdf_upload.html')
 
-        file = request.files['pdf_file']
-        if not file or not file.filename:
-            flash('Archivo vacío.', 'danger')
-            return redirect(request.url)
+    # POST: validate file and start background job; return JSON
+    if 'pdf_file' not in request.files:
+        return jsonify({'error': 'No se seleccionó ningún archivo.'}), 400
 
-        if not allowed_file(file.filename):
-            flash('Solo se aceptan archivos PDF.', 'danger')
-            return redirect(request.url)
+    file = request.files['pdf_file']
+    if not file or not file.filename:
+        return jsonify({'error': 'Archivo vacío.'}), 400
 
-        file_bytes = file.read()
-        result = process_pdf(file_bytes)
+    if not allowed_file(file.filename):
+        return jsonify({'error': 'Solo se aceptan archivos PDF.'}), 400
 
-        if result['errors']:
-            for err in result['errors']:
-                flash(err, 'danger')
+    file_bytes = file.read()
+    job_id = str(uuid.uuid4())
 
-        return render_template(
-            'admin/pdf_review.html',
-            pages=result['pages'],
-            professions=result['professions'],
-        )
+    _write_job(job_id, {
+        'id': job_id,
+        'percent': 0,
+        'stage': 'Iniciando procesamiento…',
+        'done': False,
+        'error': None,
+        'result': None,
+        'started_at': time.time(),
+    })
 
-    return render_template('admin/pdf_upload.html')
+    thread = threading.Thread(target=_run_pdf_job, args=(job_id, file_bytes), daemon=True)
+    thread.start()
+
+    return jsonify({'job_id': job_id})
+
+
+@admin_bp.route('/pdf/progress/<job_id>')
+@login_required
+@admin_required
+def pdf_progress(job_id):
+    job = _read_job(job_id)
+    if job is None:
+        return jsonify({'error': 'Trabajo no encontrado.'}), 404
+    return jsonify({
+        'percent': job.get('percent', 0),
+        'stage': job.get('stage', ''),
+        'done': job.get('done', False),
+        'error': job.get('error'),
+    })
+
+
+@admin_bp.route('/pdf/result/<job_id>')
+@login_required
+@admin_required
+def pdf_result(job_id):
+    job = _read_job(job_id)
+    if job is None or not job.get('done'):
+        flash('El procesamiento no ha terminado o el trabajo ha expirado.', 'danger')
+        return redirect(url_for('admin.pdf_upload'))
+
+    if job.get('error'):
+        flash(f'Error durante el procesamiento: {job["error"]}', 'danger')
+        return redirect(url_for('admin.pdf_upload'))
+
+    result = job.get('result') or {}
+
+    try:
+        os.remove(_job_path(job_id))
+    except OSError:
+        pass
+
+    for err in result.get('errors', []):
+        flash(err, 'danger')
+
+    all_skills   = Skill.query.order_by(Skill.name_es).all()
+    all_talents  = Talent.query.order_by(Talent.name_es).all()
+    skills_data  = [{'es': s.name_es, 'en': s.name_en or ''} for s in all_skills]
+    talents_data = [{'es': t.name_es, 'en': t.name_en or ''} for t in all_talents]
+
+    professions = _validate_pdf_professions(result.get('professions', []), all_skills, all_talents)
+
+    return render_template(
+        'admin/pdf_review.html',
+        pages=result.get('pages', []),
+        professions=professions,
+        skills_data=skills_data,
+        talents_data=talents_data,
+        db_empty=len(all_skills) == 0 and len(all_talents) == 0,
+    )
 
 
 @admin_bp.route('/pdf/guardar', methods=['POST'])
@@ -170,6 +285,55 @@ def pdf_save():
     db.session.commit()
     flash(f'Profesión "{prof.name}" guardada. Recuerda vincular accesos/salidas.', 'success')
     return redirect(url_for('professions.edit', prof_id=prof.id))
+
+
+def _validate_pdf_professions(professions: list, all_skills, all_talents) -> list:
+    """
+    For each profession dict, add:
+      unmatched_skills  — items from skills_raw that couldn't be matched to any DB skill
+      unmatched_talents — items from talents_raw that couldn't be matched to any DB talent
+      no_exits          — True if exits_raw is empty
+      no_entries        — True if entries_raw is empty
+    """
+    import difflib
+
+    skill_names  = set()
+    for s in all_skills:
+        skill_names.add(s.name_es.lower())
+        if s.name_en:
+            skill_names.add(s.name_en.lower())
+
+    talent_names = set()
+    for t in all_talents:
+        talent_names.add(t.name_es.lower())
+        if t.name_en:
+            talent_names.add(t.name_en.lower())
+
+    for prof in professions:
+        unmatched_skills = []
+        if skill_names:
+            for raw in prof.get('skills_raw', '').replace(' o ', ',').replace(' or ', ',').split(','):
+                item = raw.strip()
+                if not item:
+                    continue
+                if not difflib.get_close_matches(item.lower(), skill_names, n=1, cutoff=0.65):
+                    unmatched_skills.append(item)
+
+        unmatched_talents = []
+        if talent_names:
+            for raw in prof.get('talents_raw', '').replace(' o ', ',').replace(' or ', ',').split(','):
+                item = raw.strip()
+                if not item:
+                    continue
+                if not difflib.get_close_matches(item.lower(), talent_names, n=1, cutoff=0.65):
+                    unmatched_talents.append(item)
+
+        prof['unmatched_skills']  = unmatched_skills
+        prof['unmatched_talents'] = unmatched_talents
+        prof['no_exits']    = not prof.get('exits_raw', '').strip()
+        prof['no_entries']  = not prof.get('entries_raw', '').strip()
+
+    return professions
 
 
 def _match_and_save_skills(prof, skills_raw: str):

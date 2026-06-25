@@ -4,10 +4,22 @@
 {% block content %}
 <div class="container mt-4">
   <h2 class="wh-heading mb-2"><i class="bi bi-file-earmark-check me-2"></i>Revisar datos del PDF</h2>
-  <p class="text-muted mb-4">
+  <p class="text-muted mb-1">
     Se encontraron <strong>{{ professions|length }}</strong> profesión(es) potencial(es).
     Revisa cada una y guarda las que sean correctas.
   </p>
+  <p class="text-muted small mb-4">
+    <span class="chip-legend-dot match">●</span> Encontrado en la BD &nbsp;
+    <span class="chip-legend-dot nomatch">●</span> Sin coincidencia — revisa y elimina si es ruido del OCR
+  </p>
+
+  {% if db_empty %}
+  <div class="alert alert-warning wh-alert mb-4">
+    <i class="bi bi-exclamation-triangle me-2"></i>
+    La base de datos no tiene habilidades ni talentos cargados, por lo que no se puede validar ningún dato.
+    <a href="{{ url_for('admin.dashboard') }}" class="wh-link">Importa habilidades y talentos primero.</a>
+  </div>
+  {% endif %}
 
   {% if professions %}
     {% for prof_data in professions %}
@@ -22,6 +34,7 @@
         <form method="POST" action="{{ url_for('admin.pdf_save') }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
+          {# Names + type #}
           <div class="row g-3 mb-3">
             <div class="col-md-5">
               <label class="form-label wh-label">Nombre (ES) *</label>
@@ -34,13 +47,13 @@
             <div class="col-md-2">
               <label class="form-label wh-label">Tipo</label>
               <select name="type" class="form-select wh-input">
-                <option value="basic" {% if prof_data.type == 'basic' %}selected{% endif %}>Básica</option>
-                <option value="advanced" {% if prof_data.type == 'advanced' %}selected{% endif %}>Avanzada</option>
+                <option value="basic"     {% if prof_data.type == 'basic'     %}selected{% endif %}>Básica</option>
+                <option value="advanced"  {% if prof_data.type == 'advanced'  %}selected{% endif %}>Avanzada</option>
               </select>
             </div>
           </div>
 
-          <!-- Characteristics -->
+          {# Characteristics #}
           <div class="row g-2 mb-3">
             {% for field, label in [('ws','HA'),('bs','HP'),('s_char','F'),('t_char','R'),('ag','Ag'),('int_char','I'),('wp','V'),('fel','Em')] %}
             <div class="col-3 col-md-1">
@@ -60,29 +73,77 @@
             {% endfor %}
           </div>
 
-          <!-- Raw text sections for review -->
+          {# Skills — chip field #}
           <div class="row g-2 mb-3">
             <div class="col-md-6">
-              <label class="form-label wh-label">Habilidades (revisar)</label>
-              <textarea name="skills_raw" rows="2" class="form-control form-control-sm wh-input">{{ prof_data.skills_raw or '' }}</textarea>
+              <label class="form-label wh-label">Habilidades</label>
+              <div class="chip-wrap" data-type="skills">
+                <div class="chip-container">
+                  <div class="chip-input-wrap">
+                    <input type="text" class="chip-input" placeholder="Buscar o añadir…" autocomplete="off">
+                    <div class="chip-dropdown"></div>
+                  </div>
+                </div>
+                <input type="hidden" name="skills_raw" value="{{ prof_data.skills_raw or '' }}">
+              </div>
             </div>
+
+            {# Talents — chip field #}
             <div class="col-md-6">
-              <label class="form-label wh-label">Talentos (revisar)</label>
-              <textarea name="talents_raw" rows="2" class="form-control form-control-sm wh-input">{{ prof_data.talents_raw or '' }}</textarea>
+              <label class="form-label wh-label">Talentos</label>
+              <div class="chip-wrap" data-type="talents">
+                <div class="chip-container">
+                  <div class="chip-input-wrap">
+                    <input type="text" class="chip-input" placeholder="Buscar o añadir…" autocomplete="off">
+                    <div class="chip-dropdown"></div>
+                  </div>
+                </div>
+                <input type="hidden" name="talents_raw" value="{{ prof_data.talents_raw or '' }}">
+              </div>
             </div>
+
+            {# Trappings, Entries, Exits — plain textareas #}
             <div class="col-md-4">
               <label class="form-label wh-label">Enseres</label>
               <textarea name="trappings_raw" rows="2" class="form-control form-control-sm wh-input">{{ prof_data.trappings_raw or '' }}</textarea>
             </div>
             <div class="col-md-4">
-              <label class="form-label wh-label">Accesos (para enlazar después)</label>
+              <label class="form-label wh-label">Accesos <small class="text-muted">(enlazar después)</small></label>
               <textarea name="entries_raw" rows="2" class="form-control form-control-sm wh-input">{{ prof_data.entries_raw or '' }}</textarea>
             </div>
             <div class="col-md-4">
-              <label class="form-label wh-label">Salidas (para enlazar después)</label>
+              <label class="form-label wh-label">Salidas <small class="text-muted">(enlazar después)</small></label>
               <textarea name="exits_raw" rows="2" class="form-control form-control-sm wh-input">{{ prof_data.exits_raw or '' }}</textarea>
             </div>
           </div>
+
+          {# ── Validation warnings ── #}
+          {% if prof_data.no_exits %}
+          <div class="alert alert-danger py-2 px-3 mb-2 small">
+            <i class="bi bi-exclamation-circle me-1"></i>
+            <strong>Sin salidas detectadas.</strong> Revisa el texto extraído — casi todas las profesiones tienen salidas.
+          </div>
+          {% endif %}
+          {% if prof_data.no_entries %}
+          <div class="alert alert-warning py-2 px-3 mb-2 small">
+            <i class="bi bi-info-circle me-1"></i>
+            No se detectaron accesos. Algunas profesiones no los tienen, pero conviene revisar.
+          </div>
+          {% endif %}
+          {% if prof_data.unmatched_skills %}
+          <div class="alert alert-warning py-2 px-3 mb-2 small">
+            <i class="bi bi-book me-1"></i>
+            <strong>Habilidades sin coincidencia en BD</strong> (aparecen en naranja — elimínalas con × si son ruido):
+            {{ prof_data.unmatched_skills | join(', ') }}
+          </div>
+          {% endif %}
+          {% if prof_data.unmatched_talents %}
+          <div class="alert alert-warning py-2 px-3 mb-2 small">
+            <i class="bi bi-star me-1"></i>
+            <strong>Talentos sin coincidencia en BD</strong> (aparecen en naranja — elimínalos con × si son ruido):
+            {{ prof_data.unmatched_talents | join(', ') }}
+          </div>
+          {% endif %}
 
           <button type="submit" class="btn btn-wh btn-sm">
             <i class="bi bi-floppy me-1"></i>Guardar esta profesión
@@ -93,11 +154,12 @@
     {% endfor %}
   {% else %}
   <div class="alert alert-warning wh-alert">
-    No se detectaron profesiones en el PDF. Puedes <a href="{{ url_for('professions.create') }}" class="wh-link">crear una manualmente</a>.
+    No se detectaron profesiones en el PDF.
+    Puedes <a href="{{ url_for('professions.create') }}" class="wh-link">crear una manualmente</a>.
   </div>
   {% endif %}
 
-  <!-- Extracted text by page (collapsible) -->
+  {# Extracted text per page — collapsible #}
   {% if pages %}
   <div class="mt-4">
     <h5 class="wh-heading">Texto extraído por página</h5>
@@ -122,4 +184,220 @@
   </div>
   {% endif %}
 </div>
+
+{# ─── Chip styles ─── #}
+<style>
+.chip-wrap { position: relative; }
+
+.chip-container {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 7px;
+  min-height: 38px;
+  border: 1px solid #5c4a1e;
+  border-radius: 4px;
+  background: #12100a;
+  cursor: text;
+}
+.chip-container:focus-within { border-color: #c9a84c; }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px 2px 10px;
+  border-radius: 14px;
+  font-size: .8rem;
+  white-space: nowrap;
+  line-height: 1.5;
+}
+.chip.match   { background: rgba(30,110,30,.45); border: 1px solid rgba(60,180,60,.5); color: #9cec9c; }
+.chip.nomatch { background: rgba(130,70,0,.4);   border: 1px solid rgba(200,110,0,.5); color: #f0b060; }
+
+.chip-remove {
+  background: none; border: none; padding: 0 0 0 2px;
+  line-height: 1; cursor: pointer; color: inherit; opacity: .65; font-size: 1rem;
+}
+.chip-remove:hover { opacity: 1; }
+
+.chip-input-wrap { position: relative; display: flex; flex: 1; min-width: 120px; }
+.chip-input {
+  background: transparent; border: none; outline: none;
+  color: #c9a84c; font-size: .85rem; width: 100%; padding: 2px 4px;
+}
+
+.chip-dropdown {
+  display: none;
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 200;
+  background: #1e1608; border: 1px solid #5c4a1e; border-top: none;
+  border-radius: 0 0 4px 4px; max-height: 180px; overflow-y: auto;
+}
+.chip-dropdown.open { display: block; }
+.chip-option {
+  padding: 5px 10px; cursor: pointer; font-size: .82rem; color: #c9a84c;
+}
+.chip-option strong { color: #e8c97a; }
+.chip-option:hover { background: rgba(255,255,255,.08); }
+
+.chip-legend-dot { font-size: .85rem; }
+.chip-legend-dot.match   { color: #9cec9c; }
+.chip-legend-dot.nomatch { color: #f0b060; }
+</style>
+
+{# ─── Chip JavaScript ─── #}
+<script>
+(function () {
+  /* DB lists injected from server */
+  const SKILLS_DB  = {{ skills_data  | tojson }};
+  const TALENTS_DB = {{ talents_data | tojson }};
+
+  /* Lower-case sets for fast exact-match lookup */
+  const skillSet  = new Set(SKILLS_DB.map(s => s.es.toLowerCase()));
+  const talentSet = new Set(TALENTS_DB.map(t => t.es.toLowerCase()));
+
+  /* ── ChipField ── */
+  function ChipField(wrap) {
+    this.wrap      = wrap;
+    this.hidden    = wrap.querySelector('input[type=hidden]');
+    this.container = wrap.querySelector('.chip-container');
+    this.inputWrap = wrap.querySelector('.chip-input-wrap');
+    this.input     = wrap.querySelector('.chip-input');
+    this.dropdown  = wrap.querySelector('.chip-dropdown');
+    this.type      = wrap.dataset.type;           // 'skills' or 'talents'
+    this.dbList    = this.type === 'skills' ? SKILLS_DB  : TALENTS_DB;
+    this.matchSet  = this.type === 'skills' ? skillSet   : talentSet;
+    this.chips     = [];
+
+    /* Parse initial value */
+    var raw = (this.hidden.value || '').trim();
+    if (raw) {
+      this.chips = raw.split(',').map(s => s.trim()).filter(Boolean);
+    }
+
+    this._render();
+    this._bindInput();
+
+    /* Clicking the container focuses the text input */
+    var self = this;
+    this.container.addEventListener('click', function (e) {
+      if (!e.target.closest('.chip')) self.input.focus();
+    });
+  }
+
+  ChipField.prototype._isMatch = function (text) {
+    /* A chip matches if the full text OR any " o "/" or "-separated part matches */
+    var parts = text.toLowerCase().split(/\s+(?:o|or)\s+/);
+    return parts.some(p => this.matchSet.has(p.trim()));
+  };
+
+  ChipField.prototype._render = function () {
+    /* Remove existing chip elements (keep input-wrap) */
+    Array.from(this.container.querySelectorAll('.chip')).forEach(el => el.remove());
+
+    var self = this;
+    this.chips.forEach(function (text, idx) {
+      var el  = document.createElement('span');
+      el.className = 'chip ' + (self._isMatch(text) ? 'match' : 'nomatch');
+
+      var label = document.createTextNode(text + ' ');
+      var btn   = document.createElement('button');
+      btn.type      = 'button';
+      btn.className = 'chip-remove';
+      btn.setAttribute('aria-label', 'Eliminar');
+      btn.textContent = '×';
+      btn.dataset.idx = idx;
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        self.chips.splice(parseInt(this.dataset.idx), 1);
+        self._render();
+        self._sync();
+      });
+
+      el.appendChild(label);
+      el.appendChild(btn);
+      self.container.insertBefore(el, self.inputWrap);
+    });
+
+    this._sync();
+  };
+
+  ChipField.prototype._sync = function () {
+    this.hidden.value = this.chips.join(', ');
+  };
+
+  ChipField.prototype.addChip = function (text) {
+    text = text.trim();
+    if (text && !this.chips.includes(text)) {
+      this.chips.push(text);
+      this._render();
+    }
+  };
+
+  ChipField.prototype._bindInput = function () {
+    var self = this;
+
+    this.input.addEventListener('input', function () {
+      var q = this.value.trim().toLowerCase();
+      self.dropdown.innerHTML = '';
+      if (!q) { self.dropdown.classList.remove('open'); return; }
+
+      var matches = self.dbList.filter(function (item) {
+        return item.es.toLowerCase().includes(q) ||
+               (item.en && item.en.toLowerCase().includes(q));
+      }).slice(0, 8);
+
+      if (!matches.length) { self.dropdown.classList.remove('open'); return; }
+
+      matches.forEach(function (item) {
+        var opt = document.createElement('div');
+        opt.className = 'chip-option';
+        var hl = item.es.replace(new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + ')', 'gi'), '<strong>$1</strong>');
+        opt.innerHTML = hl + (item.en ? ' <span class="text-muted" style="font-size:.75rem">(' + item.en + ')</span>' : '');
+        opt.addEventListener('mousedown', function (e) {
+          e.preventDefault();
+          self.addChip(item.es);
+          self.input.value = '';
+          self.dropdown.innerHTML = '';
+          self.dropdown.classList.remove('open');
+        });
+        self.dropdown.appendChild(opt);
+      });
+      self.dropdown.classList.add('open');
+    });
+
+    this.input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        var first = self.dropdown.querySelector('.chip-option');
+        if (first) {
+          first.dispatchEvent(new MouseEvent('mousedown'));
+        } else if (this.value.trim()) {
+          self.addChip(this.value.trim());
+          this.value = '';
+          self.dropdown.classList.remove('open');
+        }
+      }
+      if (e.key === 'Escape') {
+        self.dropdown.classList.remove('open');
+      }
+      if (e.key === 'Backspace' && !this.value && self.chips.length) {
+        self.chips.pop();
+        self._render();
+        self._sync();
+      }
+    });
+
+    this.input.addEventListener('blur', function () {
+      setTimeout(function () { self.dropdown.classList.remove('open'); }, 160);
+    });
+  };
+
+  /* Initialise all chip-wrap elements on the page */
+  document.querySelectorAll('.chip-wrap').forEach(function (wrap) {
+    new ChipField(wrap);
+  });
+})();
+</script>
 {% endblock %}

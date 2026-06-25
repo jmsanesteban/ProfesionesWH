@@ -44,7 +44,42 @@
     </div>
   </div>
 
+  {% if stats.skills == 0 or stats.talents == 0 %}
+  <div class="alert alert-warning wh-alert mb-4">
+    <i class="bi bi-exclamation-triangle me-2"></i>
+    <strong>Atención:</strong> Para validar habilidades y talentos al importar PDFs,
+    carga primero las habilidades y talentos desde fichero.
+    {% if stats.skills == 0 %}<a href="{{ url_for('skills_talents.import_skills') }}" class="wh-link">Importar habilidades</a>{% endif %}
+    {% if stats.skills == 0 and stats.talents == 0 %} · {% endif %}
+    {% if stats.talents == 0 %}<a href="{{ url_for('skills_talents.import_talents') }}" class="wh-link">Importar talentos</a>{% endif %}
+  </div>
+  {% endif %}
+
   <div class="row g-3">
+    <div class="col-md-4">
+      <div class="card wh-card">
+        <div class="card-header wh-card-header"><i class="bi bi-book me-2"></i>Habilidades</div>
+        <div class="card-body">
+          <p>Importa las habilidades del reglamento para que la validación de PDFs funcione correctamente.</p>
+          <div class="d-flex gap-2">
+            <a href="{{ url_for('skills_talents.import_skills') }}" class="btn btn-wh">Importar</a>
+            <a href="{{ url_for('skills_talents.list_skills') }}" class="btn btn-outline-secondary">Ver todas</a>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-4">
+      <div class="card wh-card">
+        <div class="card-header wh-card-header"><i class="bi bi-star me-2"></i>Talentos</div>
+        <div class="card-body">
+          <p>Importa los talentos del reglamento para que la validación de PDFs funcione correctamente.</p>
+          <div class="d-flex gap-2">
+            <a href="{{ url_for('skills_talents.import_talents') }}" class="btn btn-wh">Importar</a>
+            <a href="{{ url_for('skills_talents.list_talents') }}" class="btn btn-outline-secondary">Ver todos</a>
+          </div>
+        </div>
+      </div>
+    </div>
     <div class="col-md-4">
       <div class="card wh-card">
         <div class="card-header wh-card-header"><i class="bi bi-file-earmark-pdf me-2"></i>Importar PDF</div>

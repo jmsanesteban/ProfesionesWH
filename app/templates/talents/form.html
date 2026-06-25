@@ -13,12 +13,8 @@
           <input type="text" name="name_es" class="form-control wh-input" required value="{{ talent.name_es if talent else '' }}">
         </div>
         <div class="mb-3">
-          <label class="form-label wh-label">Nombre (EN)</label>
+          <label class="form-label wh-label">Nombre (EN) <small class="text-muted">(para importación de profesiones)</small></label>
           <input type="text" name="name_en" class="form-control wh-input" value="{{ talent.name_en if talent and talent.name_en else '' }}">
-        </div>
-        <div class="mb-3">
-          <label class="form-label wh-label">Máximo de veces</label>
-          <input type="number" name="max_times" class="form-control wh-input" min="1" value="{{ talent.max_times if talent else 1 }}">
         </div>
         <div class="mb-3">
           <label class="form-label wh-label">Descripción</label>

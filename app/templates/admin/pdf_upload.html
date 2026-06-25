@@ -5,37 +5,222 @@
 <div class="container mt-4" style="max-width:700px">
   <h2 class="wh-heading mb-4"><i class="bi bi-file-earmark-pdf me-2"></i>Importar Profesiones desde PDF</h2>
 
-  <div class="card wh-card mb-4">
-    <div class="card-body">
-      <p class="wh-description">
-        Sube un PDF del libro de Warhammer Fantasy (escaneado o digital). El sistema:
-      </p>
-      <ul class="wh-description">
-        <li>Extrae el texto (con OCR si está escaneado).</li>
-        <li>Detecta el idioma y lo traduce al español si es necesario.</li>
-        <li>Analiza el texto buscando las secciones de profesión.</li>
-        <li>Te muestra los resultados para que los revises antes de guardar.</li>
-      </ul>
-      <p class="text-warning small"><i class="bi bi-exclamation-triangle me-1"></i>
-        El análisis automático es una ayuda. Revisa siempre los datos antes de guardar.
-      </p>
-    </div>
-  </div>
-
-  <form method="POST" enctype="multipart/form-data">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <div class="card wh-card">
+  <!-- Upload section -->
+  <div id="upload-section">
+    <div class="card wh-card mb-4">
       <div class="card-body">
-        <div class="mb-3">
-          <label class="form-label wh-label">Archivo PDF <span class="text-danger">*</span></label>
-          <input type="file" name="pdf_file" class="form-control wh-input" accept=".pdf" required>
-          <small class="text-muted">Máximo 50 MB. Solo archivos PDF.</small>
-        </div>
-        <button type="submit" class="btn btn-wh">
-          <i class="bi bi-upload me-1"></i>Procesar PDF
-        </button>
+        <p class="wh-description">
+          Sube un PDF del libro de Warhammer Fantasy (escaneado o digital). El sistema:
+        </p>
+        <ul class="wh-description">
+          <li>Extrae el texto (con OCR si está escaneado).</li>
+          <li>Detecta el idioma y lo traduce al español si es necesario.</li>
+          <li>Analiza el texto buscando las secciones de profesión.</li>
+          <li>Te muestra los resultados para que los revises antes de guardar.</li>
+        </ul>
+        <p class="text-warning small"><i class="bi bi-exclamation-triangle me-1"></i>
+          El análisis automático es una ayuda. Revisa siempre los datos antes de guardar.
+        </p>
       </div>
     </div>
-  </form>
+
+    <form id="pdf-form" method="POST" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="card wh-card">
+        <div class="card-body">
+          <div class="mb-3">
+            <label class="form-label wh-label">Archivo PDF <span class="text-danger">*</span></label>
+            <input type="file" name="pdf_file" id="pdf-file" class="form-control wh-input" accept=".pdf" required>
+            <small class="text-muted">Máximo 100 MB. Solo archivos PDF.</small>
+            <div id="size-error" class="text-danger small mt-1" style="display:none"></div>
+          </div>
+          <button type="submit" id="submit-btn" class="btn btn-wh">
+            <i class="bi bi-upload me-1"></i>Procesar PDF
+          </button>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  <!-- Progress section (hidden until processing starts) -->
+  <div id="progress-section" style="display:none">
+    <div class="card wh-card">
+      <div class="card-body">
+        <h5 class="wh-label mb-3"><i class="bi bi-gear-fill me-2 spin"></i>Procesando PDF…</h5>
+
+        <div class="progress mb-2" style="height:28px; border-radius:6px;">
+          <div id="progress-bar"
+               class="progress-bar progress-bar-striped progress-bar-animated"
+               role="progressbar"
+               style="width:0%; font-size:.9rem; font-weight:600;"
+               aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+            0%
+          </div>
+        </div>
+
+        <p id="stage-text" class="wh-description mb-1 mt-2">Subiendo archivo…</p>
+        <p id="time-text" class="text-muted small mb-0"></p>
+
+        <div id="error-box" class="alert alert-danger mt-3" style="display:none"></div>
+      </div>
+    </div>
+
+    <p class="text-muted small mt-3">
+      <i class="bi bi-info-circle me-1"></i>
+      Los PDFs escaneados requieren OCR página por página y pueden tardar varios minutos.
+      No cierres esta ventana.
+    </p>
+  </div>
 </div>
+
+<style>
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { display: inline-block; animation: spin 1.5s linear infinite; }
+</style>
+
+<script>
+(function () {
+  const MAX_BYTES = 104857600; // 100 MB
+  const POLL_MS   = 1500;
+
+  const form        = document.getElementById('pdf-form');
+  const fileInput   = document.getElementById('pdf-file');
+  const sizeErr     = document.getElementById('size-error');
+  const uploadSec   = document.getElementById('upload-section');
+  const progressSec = document.getElementById('progress-section');
+  const bar         = document.getElementById('progress-bar');
+  const stageText   = document.getElementById('stage-text');
+  const timeText    = document.getElementById('time-text');
+  const errorBox    = document.getElementById('error-box');
+
+  let startTime = null;
+  let pollFailures = 0;
+
+  // ---- helpers ----
+
+  function setProgress(pct, stage) {
+    pct = Math.min(100, Math.max(0, Math.round(pct)));
+    bar.style.width = pct + '%';
+    bar.setAttribute('aria-valuenow', pct);
+    bar.textContent = pct + '%';
+    if (stage) stageText.textContent = stage;
+  }
+
+  function updateTime(processingPercent) {
+    if (!startTime || processingPercent < 5) { timeText.textContent = ''; return; }
+    const elapsed = (Date.now() - startTime) / 1000;
+    const eta = processingPercent > 0 ? elapsed * (100 - processingPercent) / processingPercent : null;
+    let txt = 'Tiempo transcurrido: ' + fmtTime(elapsed);
+    if (eta !== null && eta > 2) txt += '  ·  Tiempo restante estimado: ~' + fmtTime(eta);
+    timeText.textContent = txt;
+  }
+
+  function fmtTime(s) {
+    s = Math.round(s);
+    return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+  }
+
+  function showError(msg) {
+    errorBox.textContent = msg;
+    errorBox.style.display = 'block';
+    errorBox.insertAdjacentHTML('afterend',
+      '<a href="/admin/pdf" class="btn btn-secondary btn-sm mt-2">Volver</a>');
+    stageText.textContent = 'Ha ocurrido un error.';
+    bar.classList.remove('progress-bar-animated', 'progress-bar-striped');
+    bar.classList.add('bg-danger');
+  }
+
+  // ---- polling ----
+
+  function poll(jobId) {
+    fetch('/admin/pdf/progress/' + jobId)
+      .then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function(data) {
+        pollFailures = 0;
+
+        if (data.error) { showError(data.error); return; }
+
+        // Map job percent (0-100) → display percent (20-100)
+        const displayPct = 20 + data.percent * 0.8;
+        setProgress(displayPct, data.stage);
+        updateTime(data.percent);
+
+        if (data.done) {
+          setProgress(100, 'Completado. Redirigiendo…');
+          bar.classList.remove('progress-bar-animated', 'progress-bar-striped');
+          setTimeout(function() {
+            window.location.href = '/admin/pdf/result/' + jobId;
+          }, 600);
+        } else {
+          setTimeout(function() { poll(jobId); }, POLL_MS);
+        }
+      })
+      .catch(function() {
+        pollFailures++;
+        if (pollFailures >= 5) {
+          showError('Se perdió la conexión con el servidor. Recarga la página para comprobar el estado.');
+        } else {
+          setTimeout(function() { poll(jobId); }, POLL_MS * 2);
+        }
+      });
+  }
+
+  // ---- form submit ----
+
+  form.addEventListener('submit', function(e) {
+    e.preventDefault();
+
+    const file = fileInput.files[0];
+    if (!file) return;
+
+    if (file.size > MAX_BYTES) {
+      sizeErr.textContent = 'El archivo pesa ' + (file.size / 1048576).toFixed(1) +
+                            ' MB y supera el límite de 100 MB.';
+      sizeErr.style.display = 'block';
+      return;
+    }
+    sizeErr.style.display = 'none';
+
+    // Switch UI
+    uploadSec.style.display = 'none';
+    progressSec.style.display = 'block';
+    startTime = Date.now();
+
+    const formData = new FormData(form);
+    const xhr = new XMLHttpRequest();
+
+    // Upload progress: 0-20%
+    xhr.upload.addEventListener('progress', function(ev) {
+      if (ev.lengthComputable) {
+        setProgress(ev.loaded / ev.total * 20, 'Subiendo archivo…');
+      }
+    });
+
+    xhr.addEventListener('load', function() {
+      if (xhr.status !== 200) {
+        showError('Error al subir el archivo (HTTP ' + xhr.status + ').');
+        return;
+      }
+      let data;
+      try { data = JSON.parse(xhr.responseText); } catch(ex) {
+        showError('Respuesta inesperada del servidor.'); return;
+      }
+      if (data.error) { showError(data.error); return; }
+      setProgress(20, 'Archivo recibido. Iniciando procesamiento…');
+      poll(data.job_id);
+    });
+
+    xhr.addEventListener('error', function() {
+      showError('Error de red al subir el archivo.');
+    });
+
+    xhr.open('POST', '/admin/pdf');
+    xhr.setRequestHeader('X-CSRFToken', '{{ csrf_token() }}');
+    xhr.send(formData);
+  });
+})();
+</script>
 {% endblock %}

@@ -1,6 +1,6 @@
 import os
 import click
-from flask import Flask
+from flask import Flask, flash, redirect, url_for, request
 from app.config import config_by_name
 from app.extensions import db, login_manager, bcrypt, migrate, csrf
 
@@ -38,16 +38,40 @@ def create_app(config_name='default'):
     from app.models import user, profession, skill, talent, character  # noqa: F401
 
     _register_cli_commands(app)
+    _register_error_handlers(app)
 
     return app
+
+
+def _register_error_handlers(app):
+    from werkzeug.exceptions import RequestEntityTooLarge
+
+    @app.errorhandler(RequestEntityTooLarge)
+    def handle_file_too_large(e):
+        max_mb = app.config.get('MAX_CONTENT_LENGTH', 52428800) // (1024 * 1024)
+        flash(f'El archivo supera el tamaño máximo permitido ({max_mb} MB).', 'danger')
+        referrer = request.referrer
+        if referrer and '/admin/pdf' in referrer:
+            return redirect(url_for('admin.pdf_upload')), 302
+        return redirect('/'), 302
 
 
 def _register_cli_commands(app):
     @app.cli.command('init-db')
     def init_db_cmd():
-        """Create all database tables (idempotent, safe to re-run)."""
+        """Create all database tables and apply incremental column additions."""
         with app.app_context():
             db.create_all()
+            from sqlalchemy import text, inspect as sa_inspect
+            inspector = sa_inspect(db.engine)
+            skill_cols = {c['name'] for c in inspector.get_columns('skills')}
+            with db.engine.begin() as conn:
+                if 'caracteristicas' not in skill_cols:
+                    conn.execute(text('ALTER TABLE skills ADD COLUMN caracteristicas VARCHAR(300) NULL'))
+                    click.echo('  Added skills.caracteristicas')
+                if 'talentos_asociados' not in skill_cols:
+                    conn.execute(text('ALTER TABLE skills ADD COLUMN talentos_asociados VARCHAR(500) NULL'))
+                    click.echo('  Added skills.talentos_asociados')
             click.echo('Database tables created/verified.')
 
     @app.cli.command('create-admin')
