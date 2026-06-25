@@ -241,7 +241,14 @@ def pdf_result(job_id):
 @login_required
 @admin_required
 def pdf_save():
-    """Save one parsed profession from the PDF review form."""
+    """
+    Save one parsed profession from the PDF review form.
+
+    save_mode:
+      'create'  — always create a new profession (default)
+      'update'  — overwrite the existing profession identified by existing_prof_id
+      'skip'    — discard import, go to existing profession
+    """
     from flask_login import current_user
 
     name = request.form.get('name', '').strip()
@@ -249,6 +256,37 @@ def pdf_save():
         flash('La profesión necesita un nombre.', 'danger')
         return redirect(url_for('admin.pdf_upload'))
 
+    save_mode = request.form.get('save_mode', 'create')
+    existing_prof_id = request.form.get('existing_prof_id', type=int)
+
+    # ── Skip mode ─────────────────────────────────────────────────────────
+    if save_mode == 'skip' and existing_prof_id:
+        existing = db.session.get(Profession, existing_prof_id)
+        if existing:
+            flash(f'Profesión "{existing.name}" omitida — se mantiene la versión existente.', 'info')
+            return redirect(url_for('professions.edit', prof_id=existing.id))
+
+    # ── Update mode ────────────────────────────────────────────────────────
+    if save_mode == 'update' and existing_prof_id:
+        prof = db.session.get(Profession, existing_prof_id)
+        if prof:
+            prof.name    = name
+            prof.name_en = request.form.get('name_en', '').strip() or None
+            prof.type    = request.form.get('type', 'basic')
+            for field in Profession.PRIMARY_FIELDS + Profession.SECONDARY_FIELDS:
+                val = request.form.get(field, '').strip()
+                setattr(prof, field, int(val) if val.lstrip('-').isdigit() else None)
+            db.session.flush()
+            # Clear and re-add relations
+            ProfessionSkill.query.filter_by(profession_id=prof.id).delete()
+            ProfessionTalent.query.filter_by(profession_id=prof.id).delete()
+            ProfessionTrapping.query.filter_by(profession_id=prof.id).delete()
+            _apply_prof_relations(prof)
+            db.session.commit()
+            flash(f'Profesión "{prof.name}" actualizada desde el PDF.', 'success')
+            return redirect(url_for('professions.edit', prof_id=prof.id))
+
+    # ── Create mode (default) ──────────────────────────────────────────────
     prof = Profession(
         name=name,
         name_en=request.form.get('name_en', '').strip() or None,
@@ -256,21 +294,25 @@ def pdf_save():
         description=request.form.get('description', '').strip() or None,
         created_by_id=current_user.id,
     )
-
     for field in Profession.PRIMARY_FIELDS + Profession.SECONDARY_FIELDS:
         val = request.form.get(field, '').strip()
         setattr(prof, field, int(val) if val.lstrip('-').isdigit() else None)
 
     db.session.add(prof)
     db.session.flush()
+    _apply_prof_relations(prof)
+    db.session.commit()
+    flash(f'Profesión "{prof.name}" guardada. Recuerda vincular accesos/salidas.', 'success')
+    return redirect(url_for('professions.edit', prof_id=prof.id))
 
-    # Trappings
+
+def _apply_prof_relations(prof: 'Profession') -> None:
+    """Add trappings, skills and talents from the current request form to prof."""
     for item in request.form.get('trappings_raw', '').split(','):
         item = item.strip()
         if item:
             db.session.add(ProfessionTrapping(profession_id=prof.id, name=item))
 
-    # Skills/Talents: prefer pre-translation English raw for better name matching
     _match_and_save_skills(
         prof,
         request.form.get('skills_raw', ''),
@@ -282,81 +324,111 @@ def pdf_save():
         request.form.get('talents_raw_en', ''),
     )
 
-    # Career exits (just store raw names for now; admin can link later)
-    # We store them in description as a note if prof doesn't exist yet
-    exits_raw = request.form.get('exits_raw', '').strip()
+    exits_raw   = request.form.get('exits_raw', '').strip()
     entries_raw = request.form.get('entries_raw', '').strip()
     if exits_raw or entries_raw:
         note = ''
-        if exits_raw:
-            note += f'\n[SALIDAS PENDIENTES DE VINCULAR]: {exits_raw}'
-        if entries_raw:
-            note += f'\n[ACCESOS PENDIENTES DE VINCULAR]: {entries_raw}'
+        if exits_raw:   note += f'\n[SALIDAS PENDIENTES DE VINCULAR]: {exits_raw}'
+        if entries_raw: note += f'\n[ACCESOS PENDIENTES DE VINCULAR]: {entries_raw}'
         prof.description = (prof.description or '') + note
-
-    db.session.commit()
-    flash(f'Profesión "{prof.name}" guardada. Recuerda vincular accesos/salidas.', 'success')
-    return redirect(url_for('professions.edit', prof_id=prof.id))
 
 
 # ---------------------------------------------------------------------------
 # Known translation discrepancies: Google-Translate ES → official WFRP2 ES
-# These are terms where GTranslate consistently produces the wrong word and
-# difflib fuzzy matching cannot bridge the gap.
+# Prefix entries apply when a specialization follows, e.g.
+# "conocimiento académico (genealogía)" → "sabiduría académica (genealogía)".
 # ---------------------------------------------------------------------------
 _ES_SYNONYMS = {
-    'lectura/escritura':     'leer/escribir',
-    'leer / escribir':       'leer/escribir',
-    'encanto':               'carisma',
-    'chisme':                'cotilleo',
-    'curación':              'curar',
-    'cuidado de animales':   'criar animales',
-    'adiestramiento animal': 'adiestrar animales',
-    'hablar idioma':         'hablar idioma',   # same — keep for completeness
-    'sangre fría':           'sangre fría',
-    'franqueza':             'contundente',
+    # prefix-matching entries (order matters: longest first to avoid partial hits)
+    'conocimiento académico':     'sabiduría académica',
+    'conocimiento común':         'sabiduría popular',
+    # exact entries
+    'lectura/escritura':          'leer/escribir',
+    'leer / escribir':            'leer/escribir',
+    'encanto':                    'carisma',
+    'chisme':                     'cotilleo',
+    'curación':                   'curar',
+    'cuidado de animales':        'criar animales',
+    'adiestramiento animal':      'adiestrar animales',
+    'ocultación':                 'esconderse',
+    'sangre fría':                'sangre fría',
+    'franqueza':                  'contundente',
+    'blather':                    'disparatar',
 }
 
-# EN synonyms (GTranslate EN → official EN name in DB)
+# EN synonyms (alternate EN → official EN name in DB)
 _EN_SYNONYMS = {
-    'read/write':   'read/write',
-    'gossip':       'gossip',
-    'heal':         'heal',
+    'academic knowledge':         'academic knowledge',
+    'common knowledge':           'common knowledge',
+    'read/write':                 'read/write',
+    'gossip':                     'gossip',
+    'heal':                       'heal',
 }
+
+# Stat characteristic abbreviations — used to strip trailing "(Int)", "(Ag)", etc.
+_STAT_ABBREVS = frozenset({
+    'HA', 'HP', 'F', 'R', 'AG', 'I', 'V', 'EM',          # Spanish primary
+    'A', 'H', 'BF', 'BR', 'M', 'MAG', 'PL', 'PD',         # Spanish secondary
+    'WS', 'BS', 'S', 'T', 'INT', 'WP', 'FEL',             # English primary
+    'W', 'SB', 'TB', 'IP', 'FP',                           # English secondary
+})
+_RE_STAT_SUFFIX = re.compile(r'\s*\(([A-Za-z]{1,4})\)\s*$')
+
+
+def _strip_stat_suffix(text: str) -> str:
+    """Remove trailing '(Xxx)' only when Xxx is a known characteristic abbreviation."""
+    m = _RE_STAT_SUFFIX.search(text)
+    if m and m.group(1).upper() in _STAT_ABBREVS:
+        return text[:m.start()].strip()
+    return text.strip()
 
 
 def _normalize_item(item: str, synonyms: dict) -> str:
-    """Apply synonym table, then return lowercased, stripped token."""
-    low = item.lower().strip()
-    return synonyms.get(low, low)
+    """
+    Strip stat suffix, apply synonym table (exact + prefix match),
+    return lowercased token.
+    """
+    stripped = _strip_stat_suffix(item)
+    low = stripped.lower().strip()
+
+    # Exact synonym match
+    if low in synonyms:
+        return synonyms[low]
+
+    # Prefix match: "conocimiento académico (foo)" → "sabiduría académica (foo)"
+    for key, replacement in synonyms.items():
+        if low.startswith(key + ' (') or low.startswith(key + '('):
+            return replacement + low[len(key):]
+
+    return low
 
 
 def _fuzzy_match(item: str, name_set: set, synonyms: dict, cutoff: float = 0.65) -> bool:
     """
-    Multi-strategy matching:
-      1. Direct synonym lookup
-      2. difflib fuzzy against the full set
-      3. Component matching: split 'A/B' → try each component separately
-    Returns True if any strategy finds a match.
+    Multi-strategy matching.  Returns True on first hit.
+      1. Direct synonym hit
+      2. difflib fuzzy on full normalized name
+      3. Slash-component split (e.g. 'leer/escribir')
+      4. Base-name match — strip parenthetical specialization
     """
-    import difflib
     norm = _normalize_item(item, synonyms)
 
-    # Strategy 1: synonym hit
     if norm in name_set:
         return True
-
-    # Strategy 2: standard fuzzy
     if difflib.get_close_matches(norm, name_set, n=1, cutoff=cutoff):
         return True
 
-    # Strategy 3: slash-separated components (e.g. 'leer/escribir')
     parts = [p.strip() for p in re.split(r'[/,]', norm) if p.strip()]
     if len(parts) > 1:
-        if any(
-            difflib.get_close_matches(p, name_set, n=1, cutoff=cutoff)
-            for p in parts
-        ):
+        if any(difflib.get_close_matches(p, name_set, n=1, cutoff=cutoff) for p in parts):
+            return True
+
+    # Strategy 4: base name — "sabiduría popular (tres cualquiera)" → "sabiduría popular"
+    base = re.sub(r'\s*\(.*$', '', norm).strip()
+    if base and base != norm:
+        if base in name_set:
+            return True
+        if difflib.get_close_matches(base, name_set, n=1, cutoff=cutoff):
             return True
 
     return False
@@ -367,22 +439,27 @@ def _fuzzy_find(item: str, name_map: dict, synonyms: dict, cutoff: float = 0.7):
     Like _fuzzy_match but returns the matched DB object (or None).
     name_map: {lowercased_name: db_object}
     """
-    import difflib
     norm = _normalize_item(item, synonyms)
 
-    # Strategy 1: synonym → direct lookup
     if norm in name_map:
         return name_map[norm]
 
-    # Strategy 2: standard fuzzy
     hits = difflib.get_close_matches(norm, name_map.keys(), n=1, cutoff=cutoff)
     if hits:
         return name_map[hits[0]]
 
-    # Strategy 3: slash components
     parts = [p.strip() for p in re.split(r'[/,]', norm) if p.strip()]
     for part in parts:
         hits = difflib.get_close_matches(part, name_map.keys(), n=1, cutoff=cutoff)
+        if hits:
+            return name_map[hits[0]]
+
+    # Strategy 4: base name
+    base = re.sub(r'\s*\(.*$', '', norm).strip()
+    if base and base != norm:
+        if base in name_map:
+            return name_map[base]
+        hits = difflib.get_close_matches(base, name_map.keys(), n=1, cutoff=cutoff)
         if hits:
             return name_map[hits[0]]
 
@@ -391,11 +468,12 @@ def _fuzzy_find(item: str, name_map: dict, synonyms: dict, cutoff: float = 0.7):
 
 def _validate_pdf_professions(professions: list, all_skills, all_talents) -> list:
     """
-    For each profession dict, add:
-      unmatched_skills  — items from skills_raw that couldn't be matched to any DB skill
-      unmatched_talents — items from talents_raw that couldn't be matched to any DB talent
-      no_exits          — True if exits_raw is empty
-      no_entries        — True if entries_raw is empty
+    Enrich each profession dict with validation data:
+      unmatched_skills  — items that couldn't be matched in DB
+      unmatched_talents — same for talents
+      is_en_source      — True when English raw is being used for matching
+      existing_prof     — dict with DB profession data if a same-name prof already exists
+      no_exits / no_entries — structural warnings
     """
     skill_names  = set()
     for s in all_skills:
@@ -410,10 +488,29 @@ def _validate_pdf_professions(professions: list, all_skills, all_talents) -> lis
             talent_names.add(t.name_en.lower())
 
     for prof in professions:
-        # Prefer pre-translation English raw (avoids GTranslate ≠ official-Spanish gap)
+        # ── Duplicate detection ────────────────────────────────────────────
+        existing = Profession.query.filter(
+            db.func.lower(Profession.name) == prof.get('name', '').lower()
+        ).first()
+        if existing:
+            prof['existing_prof'] = {
+                'id':             existing.id,
+                'name':           existing.name,
+                'type':           existing.type,
+                'skill_count':    len(existing.skills),
+                'talent_count':   len(existing.talents),
+                'trapping_count': len(existing.trappings),
+                **{f: getattr(existing, f)
+                   for f in (Profession.PRIMARY_FIELDS + Profession.SECONDARY_FIELDS)},
+            }
+        else:
+            prof['existing_prof'] = None
+
+        # ── Unmatched validation ───────────────────────────────────────────
+        is_en = bool(prof.get('skills_raw_en'))
         skills_to_check  = prof.get('skills_raw_en')  or prof.get('skills_raw', '')
         talents_to_check = prof.get('talents_raw_en') or prof.get('talents_raw', '')
-        syn = _ES_SYNONYMS if not prof.get('skills_raw_en') else _EN_SYNONYMS
+        syn = _EN_SYNONYMS if is_en else _ES_SYNONYMS
 
         unmatched_skills = []
         if skill_names:
@@ -435,6 +532,7 @@ def _validate_pdf_professions(professions: list, all_skills, all_talents) -> lis
 
         prof['unmatched_skills']  = unmatched_skills
         prof['unmatched_talents'] = unmatched_talents
+        prof['is_en_source']      = is_en
         prof['no_exits']    = not prof.get('exits_raw', '').strip()
         prof['no_entries']  = not prof.get('entries_raw', '').strip()
 
