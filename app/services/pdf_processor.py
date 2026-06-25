@@ -169,14 +169,24 @@ def process_pdf(file_bytes: bytes, progress_cb=None) -> dict:
                     f'OCR página {page_num + 1} de {total_pages}…'
                 )
             text, word_rows = _ocr_page(file_bytes, page_num)
+            sep_y = None
         else:
             if progress_cb:
                 progress_cb(
                     5 + int(page_num / total_pages * 75),
                     f'Extrayendo página {page_num + 1} de {total_pages}…'
                 )
-            text      = raw_text
-            word_rows = _digital_word_rows(page)
+            # Detect visual separator line (horizontal rule between career data
+            # and narrative section).  This is the most reliable way to know
+            # where career data ends in digital PDFs.
+            sep_y = _find_separator_y(page)
+            if sep_y is not None:
+                text      = _text_above_y(page, sep_y)
+                word_rows = _digital_word_rows(page, y_cutoff=sep_y)
+                logger.debug("Page %d: separator line at y=%.1f", page_num + 1, sep_y)
+            else:
+                text      = raw_text
+                word_rows = _digital_word_rows(page)
 
         # ---- 2. Translation ----
         original_text = text  # always preserve pre-translation text
@@ -292,14 +302,20 @@ def _ocr_page(file_bytes: bytes, page_index: int):
         return '', []
 
 
-def _digital_word_rows(page) -> list:
-    """Extract word positions from a digital PDF page using PyMuPDF."""
+def _digital_word_rows(page, y_cutoff: float = None) -> list:
+    """Extract word positions from a digital PDF page using PyMuPDF.
+
+    y_cutoff: if provided, ignore all words whose top edge is at or below
+              this y-coordinate (i.e. below the visual separator line).
+    """
     try:
         words = page.get_text("words")
         # words: (x0, y0, x1, y1, word, block, line, word_idx)
         rows_dict = defaultdict(list)
         for w in words:
             x0, y0, x1, y1, word = w[:5]
+            if y_cutoff is not None and y0 >= y_cutoff:
+                continue
             word = word.strip()
             if not word:
                 continue
@@ -312,6 +328,53 @@ def _digital_word_rows(page) -> list:
     except Exception as e:
         logger.warning("Word extraction failed: %s", e)
         return []
+
+
+def _find_separator_y(page) -> float | None:
+    """
+    Detect the y-coordinate of a horizontal separator line (vector graphic)
+    that marks the boundary between career data and narrative text.
+
+    Looks for drawing elements that are:
+      - wide  (≥ 40 % of page width)
+      - thin  (≤ 6 px tall)
+      - below the stat-table area (> 25 % of page height)
+
+    Returns the topmost matching y, or None when no clear separator is found.
+    """
+    pw = page.rect.width
+    ph = page.rect.height
+    min_w = pw * 0.40
+    candidates = []
+    try:
+        for d in page.get_drawings():
+            r = d.get('rect')
+            if r is None:
+                continue
+            if r.width >= min_w and r.height <= 6 and r.y0 > ph * 0.25:
+                candidates.append(float(r.y0))
+    except Exception as e:
+        logger.debug("Drawing extraction failed: %s", e)
+    return min(candidates) if candidates else None
+
+
+def _text_above_y(page, y_cutoff: float) -> str:
+    """Return page text, skipping any content whose top edge is at or below y_cutoff."""
+    lines_out = []
+    try:
+        for block in page.get_text("dict").get('blocks', []):
+            if block.get('type') != 0:
+                continue
+            for line in block.get('lines', []):
+                if line['bbox'][1] >= y_cutoff:
+                    continue
+                text = ' '.join(s.get('text', '') for s in line.get('spans', []))
+                if text.strip():
+                    lines_out.append(text)
+    except Exception as e:
+        logger.warning("Text-above-y extraction failed: %s", e)
+        return page.get_text("text").strip()
+    return '\n'.join(lines_out)
 
 
 # ---------------------------------------------------------------------------
