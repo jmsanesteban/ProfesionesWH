@@ -1,0 +1,76 @@
+{% extends 'base.html' %}
+{% block title %}{{ 'Editar' if template else 'Nueva' }} plantilla — Admin WH{% endblock %}
+
+{% block content %}
+<div class="container mt-4" style="max-width:700px">
+  <div class="d-flex align-items-center gap-3 mb-4">
+    <a href="{{ url_for('admin.permission_templates') }}" class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-arrow-left"></i>
+    </a>
+    <h2 class="wh-heading mb-0">
+      <i class="bi bi-collection me-2"></i>{{ 'Editar plantilla' if template else 'Nueva plantilla' }}
+    </h2>
+  </div>
+
+  <form method="POST">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <div class="card wh-card mb-4">
+      <div class="card-body">
+        <div class="mb-3">
+          <label class="form-label wh-label">Nombre <span class="text-danger">*</span></label>
+          <input type="text" name="name" class="form-control wh-input"
+                 value="{{ template.name if template else '' }}" required>
+        </div>
+        <div class="mb-0">
+          <label class="form-label wh-label">Descripción</label>
+          <input type="text" name="description" class="form-control wh-input"
+                 value="{{ template.description if template and template.description else '' }}"
+                 placeholder="Descripción breve de esta plantilla">
+        </div>
+      </div>
+    </div>
+
+    <div class="card wh-card mb-4">
+      <div class="card-header wh-card-header">
+        <i class="bi bi-key me-2"></i>Permisos incluidos
+      </div>
+      <div class="card-body">
+        {% set module_labels = {
+          'professions': 'Profesiones',
+          'skills':      'Habilidades y Talentos',
+          'pathfinder':  'Buscador de caminos',
+          'characters':  'Personajes',
+          'admin':       'Administración',
+        } %}
+        {% for module, perms in perms_by_module.items() %}
+        <div class="mb-3">
+          <h6 class="wh-label text-uppercase small mb-1">
+            {{ module_labels.get(module, module) }}
+          </h6>
+          {% for perm in perms %}
+          <div class="form-check mb-1">
+            <input class="form-check-input" type="checkbox"
+                   name="permissions" value="{{ perm.code }}"
+                   id="tperm_{{ perm.code | replace('.', '_') }}"
+                   {% if perm.code in checked %}checked{% endif %}>
+            <label class="form-check-label" for="tperm_{{ perm.code | replace('.', '_') }}">
+              <strong>{{ perm.name }}</strong>
+              <small class="text-muted ms-1">{{ perm.description }}</small>
+            </label>
+          </div>
+          {% endfor %}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="d-flex gap-2">
+      <button type="submit" class="btn btn-wh">
+        <i class="bi bi-floppy me-1"></i>{{ 'Guardar cambios' if template else 'Crear plantilla' }}
+      </button>
+      <a href="{{ url_for('admin.permission_templates') }}" class="btn btn-outline-secondary">Cancelar</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

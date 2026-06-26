@@ -32,7 +32,8 @@ _SKILL_KEYS_ORDERED = [
     ('talentos_asociados', 'talentos_asociados'),
     ('características',    'caracteristicas'),
     ('caracteristicas',    'caracteristicas'),
-    ('características',    'caracteristicas'),
+    ('característica',     'caracteristicas'),   # singular con tilde
+    ('caracteristica',     'caracteristicas'),   # singular sin tilde
     ('descripción',        'description'),
     ('descripcion',        'description'),
     ('description',        'description'),

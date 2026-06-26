@@ -5,6 +5,9 @@
 <div class="container mt-4" style="max-width:700px">
   <h2 class="wh-heading mb-4"><i class="bi bi-file-earmark-pdf me-2"></i>Importar Profesiones desde PDF</h2>
 
+  <!-- Resume banner (populated by JS if a recent import exists) -->
+  <div id="resume-banner"></div>
+
   <!-- Upload section -->
   <div id="upload-section">
     <div class="card wh-card mb-4">
@@ -251,6 +254,45 @@
     xhr.setRequestHeader('X-CSRFToken', '{{ csrf_token() }}');
     xhr.send(formData);
   });
+
+  // ── Resume banner ──────────────────────────────────────────────────────
+  (function() {
+    var last; try { last = JSON.parse(localStorage.getItem('wh_last_pdf') || 'null'); } catch(e) {}
+    if (!last || !last.cache_id || !last.saved_at) return;
+    var ageMs = Date.now() - last.saved_at;
+    if (ageMs > 86400000) return;   // > 24 h
+
+    var ageH = Math.round(ageMs / 3600000);
+    var ageStr = ageH < 1 ? 'hace menos de 1h'
+               : ageH === 1 ? 'hace 1h'
+               : 'hace ' + ageH + 'h';
+    var fname = last.filename ? ' <em>«' + last.filename + '»</em>' : '';
+
+    document.getElementById('resume-banner').innerHTML =
+      '<div class="card wh-card mb-4">' +
+        '<div class="card-body d-flex align-items-center gap-3 flex-wrap">' +
+          '<i class="bi bi-clock-history fs-4 text-warning flex-shrink-0"></i>' +
+          '<div class="flex-grow-1">' +
+            '<div class="wh-label mb-1">Importación anterior disponible</div>' +
+            '<div class="text-muted small">PDF' + fname + ' procesado ' + ageStr + '. Puedes retomar la revisión sin volver a procesar el libro.</div>' +
+          '</div>' +
+          '<a href="/admin/pdf/resume/' + last.cache_id + '" class="btn btn-wh btn-sm">' +
+            '<i class="bi bi-arrow-counterclockwise me-1"></i>Retomar</a>' +
+          '<button class="btn btn-outline-secondary btn-sm" id="dismiss-resume" title="Descartar">' +
+            '<i class="bi bi-x-lg"></i></button>' +
+        '</div>' +
+      '</div>';
+
+    document.getElementById('dismiss-resume').addEventListener('click', function() {
+      document.getElementById('resume-banner').innerHTML = '';
+      try { localStorage.removeItem('wh_last_pdf'); } catch(e) {}
+    });
+
+    // Clear on new upload
+    form.addEventListener('submit', function() {
+      try { localStorage.removeItem('wh_last_pdf'); } catch(e) {}
+    }, { once: true });
+  })();
 })();
 </script>
 {% endblock %}

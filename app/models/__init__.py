@@ -1,4 +1,5 @@
 # Models package - imported in app factory to register with Flask-Migrate
+from app.models.permission import Permission, PermissionTemplate, user_permissions, template_permissions
 from app.models.user import User
 from app.models.profession import (
     Profession, ProfessionSkill, ProfessionTalent, ProfessionTrapping,
@@ -10,6 +11,7 @@ from app.models.character import Character, CharacterProfession, CharacterSkill,
 from app.models.synonym import Synonym
 
 __all__ = [
+    'Permission', 'PermissionTemplate', 'user_permissions', 'template_permissions',
     'User',
     'Profession', 'ProfessionSkill', 'ProfessionTalent', 'ProfessionTrapping',
     'career_exits_table',

@@ -127,6 +127,73 @@
           {% set ps_list = prof.profession_skills | selectattr('skill_id','eq', skill.id) | list if prof else [] %}
           {% set sel = ps_list[0] if ps_list else none %}
           {% set spec_val = ps_list | map(attribute='specialization') | select | join(', ') %}
+          {% if skill.id in skill_specs %}
+          {# ── Skill with predefined specializations — entry-list model ── #}
+          {% set init_entries = [] %}
+          {% for ps in ps_list %}{% set _ = init_entries.append({'spec': ps.specialization, 'group': ps.choice_group}) %}{% endfor %}
+          <div class="col-12 item-row spec-skill-row" data-section="skills" data-id="{{ skill.id }}">
+            <div class="d-flex align-items-center gap-1 py-1 px-1 rounded spec-header">
+              {# Visual indicator only — not submitted; state managed by JS #}
+              <input type="checkbox" id="sk_{{ skill.id }}"
+                     class="form-check-input mt-0 flex-shrink-0 spec-indicator-cb"
+                     {% if ps_list %}checked{% endif %}>
+              {# No 'for' — clicking the label opens the panel, not toggles the checkbox #}
+              <label class="wh-item-label flex-grow-1 spec-name-label"
+                     title="{{ skill.name_es }}">{{ skill.name_es }}</label>
+              {# Submitted iff entries exist (JS toggles disabled) #}
+              <input type="hidden" name="skill_{{ skill.id }}" class="spec-master-hidden"
+                     {% if not ps_list %}disabled{% endif %}>
+              {# JSON array of {spec, group} — one object per ProfessionSkill row #}
+              <input type="hidden" name="skill_spec_{{ skill.id }}" class="spec-entries-json"
+                     value='{{ init_entries | tojson }}'>
+              <span class="spec-count">{% if ps_list %}{{ ps_list|length }}{% endif %}</span>
+              <button type="button" class="wh-spec-expand-btn flex-shrink-0" title="Especializaciones">
+                <i class="bi bi-tag"></i>
+              </button>
+            </div>
+            <div class="spec-panel{% if ps_list %} open{% endif %}" id="spec-panel-{{ skill.id }}">
+              {# Existing entries (one row = one ProfessionSkill) #}
+              <div class="spec-entries">
+                {% for ps in ps_list %}
+                <div class="spec-entry" data-spec="{{ ps.specialization or '' }}">
+                  <span class="spec-entry-lbl">{{ ps.specialization or '—' }}</span>
+                  <input type="number" class="form-control form-control-sm wh-input spec-entry-grp"
+                         min="1" placeholder="Gr." value="{{ ps.choice_group or '' }}"
+                         title="Grupo de elección">
+                  <button type="button" class="spec-entry-rm" title="Quitar">×</button>
+                </div>
+                {% endfor %}
+              </div>
+              {# Tag picker: each click ADDS an entry (not toggle) #}
+              <div class="spec-tags">
+                {% for entry in skill_specs[skill.id] %}
+                <button type="button" class="spec-tag"
+                        data-spec="{{ entry.nombre }}"
+                        {% if entry.descripcion is defined and entry.descripcion %}title="{{ entry.descripcion }}"{% endif %}>
+                  {{ entry.nombre }}{% if entry.atributo is defined and entry.atributo %}<span class="spec-attr"> ({{ entry.atributo }})</span>{% endif %}
+                </button>
+                {% endfor %}
+              </div>
+              {# Quick presets + custom + group row #}
+              <div class="spec-add-row">
+                <div class="spec-presets">
+                  <button type="button" class="spec-preset-btn" data-preset="Cualquiera">Cualquiera</button>
+                  <button type="button" class="spec-preset-btn" data-preset="Dos cualquiera">Dos cualquiera</button>
+                  <button type="button" class="spec-preset-btn" data-preset="Tres cualquiera">Tres cualquiera</button>
+                </div>
+                <input type="text" class="form-control form-control-sm wh-input spec-custom-inp"
+                       placeholder="Otra especialización…">
+                <input type="number" class="form-control form-control-sm wh-input spec-new-grp"
+                       min="1" placeholder="Gr." title="Grupo para la nueva entrada">
+                <button type="button" class="btn btn-sm btn-outline-secondary spec-add-btn">
+                  <i class="bi bi-plus-lg"></i>
+                </button>
+              </div>
+              <small class="text-muted spec-hint">Clic en un tag para añadir. Mismo Gr. = el jugador elige uno.</small>
+            </div>
+          </div>
+          {% else %}
+          {# ── Normal skill row ── #}
           <div class="col-12 col-md-6 col-lg-4 item-row d-flex align-items-center gap-1 py-1 px-1 rounded"
                data-section="skills" data-id="{{ skill.id }}">
             <input type="checkbox" name="skill_{{ skill.id }}" id="sk_{{ skill.id }}"
@@ -144,6 +211,7 @@
                    placeholder="Esp." value="{{ spec_val }}"
                    title="Especialización(es), p.ej. Tileano, Estaliano">
           </div>
+          {% endif %}
           {% endfor %}
         </div>
         {% if not skills %}
@@ -301,6 +369,67 @@
   overflow-y: auto;
 }
 
+/* Spec-skill rows */
+.spec-skill-row { flex-direction: column !important; align-items: stretch !important; }
+.spec-header { display: flex; align-items: center; gap: 4px; }
+.spec-indicator-cb { pointer-events: none; }
+.spec-panel { display: none; flex-direction: column; gap: 5px; padding: 4px 8px 8px 28px; }
+.spec-panel.open { display: flex; }
+
+/* Entry rows — each maps to one ProfessionSkill DB row */
+.spec-entries { display: flex; flex-direction: column; gap: 2px; }
+.spec-entry {
+  display: flex; align-items: center; gap: 4px;
+  padding: 2px 4px; border-radius: 4px; border-left: 3px solid transparent;
+}
+.spec-entry-lbl {
+  flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: 'Crimson Text', Georgia, serif; font-size: .82rem; color: var(--wh-text);
+}
+.spec-entry-grp { width: 48px !important; font-size: .75rem !important; }
+.spec-entry-rm {
+  background: none; border: none; color: var(--wh-text-muted);
+  font-size: .9rem; cursor: pointer; padding: 0 2px; line-height: 1;
+}
+.spec-entry-rm:hover { color: #e05050; }
+
+/* Tag picker */
+.spec-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.spec-tag {
+  display: inline-flex; align-items: center;
+  padding: 2px 9px; border-radius: 12px;
+  border: 1px solid var(--wh-border); background: transparent;
+  color: var(--wh-text); font-size: .74rem; cursor: pointer;
+  transition: background .15s, border-color .15s;
+  font-family: 'Crimson Text', Georgia, serif; line-height: 1.4;
+}
+.spec-tag:hover { background: rgba(212,168,48,.2); border-color: var(--wh-gold); }
+.spec-tag .spec-attr { color: var(--wh-text-muted); font-size: .68rem; }
+
+/* Add row */
+.spec-add-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.spec-presets { display: flex; gap: 3px; }
+.spec-preset-btn {
+  padding: 1px 7px; border-radius: 10px; border: 1px dashed var(--wh-border-gold);
+  background: transparent; color: var(--wh-gold); font-size: .72rem; cursor: pointer;
+  font-family: 'Crimson Text', Georgia, serif; transition: background .12s;
+}
+.spec-preset-btn:hover { background: rgba(212,168,48,.2); }
+.spec-custom-inp { flex: 1; min-width: 100px; max-width: 180px; font-size: .75rem !important; }
+.spec-new-grp { width: 52px !important; font-size: .75rem !important; }
+.spec-hint { font-size: .7rem; }
+.spec-name-label { font-size: .82rem; cursor: pointer; color: var(--wh-text); font-family: 'Crimson Text', Georgia, serif; }
+
+/* Count and expand button */
+.spec-count { font-size: .72rem; color: var(--wh-gold); min-width: .8em; }
+.wh-spec-expand-btn {
+  background: none; border: 1px solid var(--wh-border); border-radius: 4px;
+  color: var(--wh-text-muted); padding: 1px 6px; font-size: .72rem; cursor: pointer;
+  display: inline-flex; align-items: center;
+  transition: border-color .15s, color .15s;
+}
+.wh-spec-expand-btn:hover { border-color: var(--wh-gold); color: var(--wh-gold); }
+
 /* Group color palette — assigned via JS, high enough opacity to be visible on dark bg */
 .g-color-1  { background: rgba( 72,120,210,.25) !important; border-left-color: #6090e0 !important; }
 .g-color-2  { background: rgba(210,130, 30,.25) !important; border-left-color: #e09040 !important; }
@@ -315,7 +444,7 @@
 
 {% block extra_scripts %}
 <script>
-// ── Group color palette ──────────────────────────────────────────────────────
+// ── Group color palette (12 entries to reduce coincidences) ─────────────────
 const GROUP_PALETTE = [
   { bg: 'rgba(72,120,210,0.32)',  border: '#6090e0' },
   { bg: 'rgba(210,130,30,0.32)', border: '#e09040' },
@@ -325,6 +454,10 @@ const GROUP_PALETTE = [
   { bg: 'rgba(200,210,30,0.32)', border: '#d0d030' },
   { bg: 'rgba(210,70,70,0.32)',  border: '#e05050' },
   { bg: 'rgba(90,50,210,0.32)',  border: '#8060d8' },
+  { bg: 'rgba(30,160,120,0.32)', border: '#30c090' },
+  { bg: 'rgba(210,60,120,0.32)', border: '#e04080' },
+  { bg: 'rgba(140,180,30,0.32)', border: '#a0c030' },
+  { bg: 'rgba(160,100,40,0.32)', border: '#c07830' },
 ];
 
 // Reads the group number from a row regardless of disabled state.
@@ -340,27 +473,38 @@ function applyGroupColors(section) {
   const grid = document.getElementById(section + '-grid');
   if (!grid) return;
 
+  // Single shared colorMap for the whole section (regular rows + spec entries).
+  // Group numbers are consistent across both, matching the same color.
   const colorMap = {};
   let nextIdx = 0;
 
-  grid.querySelectorAll('.item-row').forEach(row => {
+  function assign(key, el) {
+    if (!colorMap[key]) { colorMap[key] = GROUP_PALETTE[nextIdx++ % GROUP_PALETTE.length]; }
+    const c = colorMap[key];
+    el.style.setProperty('background',        c.bg,     'important');
+    el.style.setProperty('border-left-color', c.border, 'important');
+  }
+  function clear(el) {
+    el.style.removeProperty('background');
+    el.style.removeProperty('border-left-color');
+  }
+
+  // Regular skill/talent rows (not spec rows)
+  grid.querySelectorAll('.item-row:not(.spec-skill-row)').forEach(row => {
+    const cb = row.querySelector('input[type="checkbox"]');
+    if (!cb || !cb.checked) { clear(row); return; }
     const val = getGroupVal(row);
+    if (!val) { clear(row); return; }
+    assign(val, row);
+  });
 
-    if (!val) {
-      // Clear previous color
-      row.style.removeProperty('background');
-      row.style.removeProperty('border-left-color');
-      return;
-    }
-
-    if (!colorMap[val]) {
-      colorMap[val] = GROUP_PALETTE[nextIdx % GROUP_PALETTE.length];
-      nextIdx++;
-    }
-    const c = colorMap[val];
-    // setProperty with 'important' overrides any CSS rule including Bootstrap !important
-    row.style.setProperty('background',        c.bg,     'important');
-    row.style.setProperty('border-left-color', c.border, 'important');
+  // Spec-skill entries (each entry is a separate ProfessionSkill row)
+  grid.querySelectorAll('.spec-entries').forEach(entriesDiv => {
+    entriesDiv.querySelectorAll('.spec-entry').forEach(entry => {
+      const grp = (entry.querySelector('.spec-entry-grp').value || '').trim();
+      clear(entry);
+      if (grp) assign(grp, entry);
+    });
   });
 }
 
@@ -391,13 +535,130 @@ document.querySelectorAll('.group-input').forEach(inp => {
   });
 });
 
-// ── Apply colors once, after all setup is complete ───────────────────────────
-// setTimeout(0) pushes this after the current synchronous script finishes,
-// ensuring all disabled states are set before we read values.
+// ── Initial render: colors + default filter ──────────────────────────────────
+initSpecSkills();
+// setTimeout(0) ensures all disabled states are set before we read values.
 setTimeout(() => {
-  applyGroupColors('skills');
-  applyGroupColors('talents');
+  ['skills', 'talents'].forEach(section => {
+    applyGroupColors(section);
+    // Default to "Activas" when the profession already has checked items,
+    // otherwise "Todas" so the user can start selecting from scratch.
+    const grid = document.getElementById(section + '-grid');
+    const hasActive = grid && grid.querySelector('input[type="checkbox"]:checked');
+    sectionFilter(section, hasActive ? 'active' : 'all');
+  });
 }, 0);
+
+// ── Spec-skill panels ────────────────────────────────────────────────────────
+// Each spec-skill uses an entry-list model: every click on a tag ADDS a new
+// entry row (spec + optional group). Entries with the same Gr. are a
+// "pick one" choice group for the player. Each entry = one ProfessionSkill row.
+
+
+function initSpecSkills() {
+  document.querySelectorAll('.spec-skill-row').forEach(function(row) {
+    var entriesDiv = row.querySelector('.spec-entries');
+    var jsonInput  = row.querySelector('.spec-entries-json');
+    var masterInp  = row.querySelector('.spec-master-hidden');
+    var indicCb    = row.querySelector('.spec-indicator-cb');
+    var panel      = row.querySelector('.spec-panel');
+    var expandBtn  = row.querySelector('.wh-spec-expand-btn');
+    var countEl    = row.querySelector('.spec-count');
+    var customInp  = row.querySelector('.spec-custom-inp');
+    var newGrpInp  = row.querySelector('.spec-new-grp');
+    var addBtn     = row.querySelector('.spec-add-btn');
+
+    function syncState() {
+      var entries = [];
+      entriesDiv.querySelectorAll('.spec-entry').forEach(function(entry) {
+        var grpVal = entry.querySelector('.spec-entry-grp').value;
+        entries.push({
+          spec:  entry.dataset.spec || null,
+          group: grpVal ? parseInt(grpVal) : null
+        });
+      });
+      jsonInput.value    = JSON.stringify(entries);
+      var hasAny         = entries.length > 0;
+      masterInp.disabled = !hasAny;
+      indicCb.checked    = hasAny;
+      countEl.textContent = hasAny ? entries.length : '';
+      applyGroupColors('skills');
+    }
+
+    function makeEntry(spec, grpVal) {
+      var entry = document.createElement('div');
+      entry.className  = 'spec-entry';
+      entry.dataset.spec = spec || '';
+      var safeSpec = (spec || '—').replace(/</g, '&lt;');
+      var safeGrp  = parseInt(grpVal) || '';
+      entry.innerHTML =
+        '<span class="spec-entry-lbl">' + safeSpec + '</span>' +
+        '<input type="number" class="form-control form-control-sm wh-input spec-entry-grp"' +
+        ' min="1" placeholder="Gr." value="' + safeGrp + '" title="Grupo de elección">' +
+        '<button type="button" class="spec-entry-rm" title="Quitar">×</button>';
+      entry.querySelector('.spec-entry-grp').addEventListener('input', syncState);
+      entry.querySelector('.spec-entry-rm').addEventListener('click', function() {
+        entry.remove(); syncState();
+      });
+      entriesDiv.appendChild(entry);
+    }
+
+    // Wire remove + group-change on server-rendered entries
+    entriesDiv.querySelectorAll('.spec-entry').forEach(function(entry) {
+      entry.querySelector('.spec-entry-grp').addEventListener('input', syncState);
+      entry.querySelector('.spec-entry-rm').addEventListener('click', function() {
+        entry.remove(); syncState();
+      });
+    });
+
+    // Predefined tags: each click ADDS a new entry
+    row.querySelectorAll('.spec-tag').forEach(function(tag) {
+      tag.addEventListener('click', function() {
+        makeEntry(tag.dataset.spec, newGrpInp ? newGrpInp.value : '');
+        if (panel) panel.classList.add('open');
+        syncState();
+      });
+    });
+
+    // Custom entry
+    function doAdd() {
+      var val = customInp ? customInp.value.trim() : '';
+      if (!val) return;
+      makeEntry(val, newGrpInp ? newGrpInp.value : '');
+      if (customInp) customInp.value = '';
+      if (panel) panel.classList.add('open');
+      syncState();
+    }
+    if (addBtn)    addBtn.addEventListener('click', doAdd);
+    if (customInp) customInp.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); doAdd(); }
+    });
+
+    // Expand/collapse via the tag button
+    if (expandBtn && panel) {
+      expandBtn.addEventListener('click', function() { panel.classList.toggle('open'); });
+    }
+    // Clicking the skill name label also opens the panel
+    var nameLabel = row.querySelector('.spec-name-label');
+    if (nameLabel && panel) {
+      nameLabel.addEventListener('click', function() { panel.classList.add('open'); });
+    }
+
+    // Preset buttons ("Cualquiera", "Dos cualquiera", "Tres cualquiera")
+    row.querySelectorAll('.spec-preset-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        makeEntry(btn.dataset.preset, newGrpInp ? newGrpInp.value : '');
+        if (panel) panel.classList.add('open');
+        syncState();
+      });
+    });
+
+    // Indicator CB is visual-only; its state is derived from entries via syncState().
+    // Do NOT add a change listener — clicking through the label is disabled (no 'for' attr).
+
+    syncState();
+  });
+}
 
 // ── Section filter buttons ───────────────────────────────────────────────────
 function sectionFilter(section, mode) {

@@ -88,13 +88,14 @@
         </div>
 
         <!-- Step-by-step -->
-        <div class="accordion wh-accordion" id="acc_{{ loop.index }}">
+        {% set result_idx = loop.index %}
+        <div class="accordion wh-accordion" id="acc_{{ result_idx }}">
           {% for step in result.stats.steps %}
           <div class="accordion-item wh-accordion-item">
             <h2 class="accordion-header">
               <button class="accordion-button wh-accordion-btn {% if not loop.first %}collapsed{% endif %}"
                       type="button" data-bs-toggle="collapse"
-                      data-bs-target="#step_{{ loop.index0 }}_{{ loop.parent.loop.index }}">
+                      data-bs-target="#step_{{ loop.index0 }}_{{ result_idx }}">
                 <span class="me-2">{{ loop.index }}.</span>
                 <strong>{{ step.profession.name }}</strong>
                 <span class="ms-2 badge {% if step.profession.type=='basic' %}bg-success{% else %}bg-warning text-dark{% endif %}">
@@ -102,9 +103,8 @@
                 </span>
               </button>
             </h2>
-            <div id="step_{{ loop.index0 }}_{{ loop.parent.loop.index }}"
-                 class="accordion-collapse collapse {% if loop.first %}show{% endif %}"
-                 data-bs-parent="#acc_{{ loop.parent.loop.index }}">
+            <div id="step_{{ loop.index0 }}_{{ result_idx }}"
+                 class="accordion-collapse collapse {% if loop.first %}show{% endif %}">
               <div class="accordion-body">
                 <!-- Step characteristics -->
                 <div class="row g-2 mb-2">

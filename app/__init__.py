@@ -35,7 +35,7 @@ def create_app(config_name='default'):
     app.register_blueprint(admin_bp, url_prefix='/admin')
 
     # Import models so Flask-Migrate detects them
-    from app.models import user, profession, skill, talent, character, synonym  # noqa: F401
+    from app.models import user, permission, profession, skill, talent, character, synonym  # noqa: F401
 
     _register_cli_commands(app)
     _register_error_handlers(app)
@@ -108,7 +108,23 @@ def _register_cli_commands(app):
                         except Exception as e:
                             click.echo(f'  Warning ({tbl} specialization): {e}')
 
+            # Incremental column: users.template_id (FK to permission_templates)
+            user_cols = {c['name'] for c in inspector.get_columns('users')}
+            with db.engine.begin() as conn:
+                if 'template_id' not in user_cols:
+                    conn.execute(text(
+                        'ALTER TABLE users ADD COLUMN template_id INT NULL '
+                        'REFERENCES permission_templates(id) ON DELETE SET NULL'
+                    ))
+                    click.echo('  Added users.template_id')
+
             click.echo('Database tables created/verified.')
+
+            # Seed permissions and default templates (idempotent)
+            from app.models.permission import seed_permissions_and_templates
+            seed_permissions_and_templates()
+            click.echo('  Permissions and templates seeded.')
+
             # Seed default synonyms on first run
             from app.models.synonym import Synonym, DEFAULT_SYNONYMS
             if Synonym.query.count() == 0:

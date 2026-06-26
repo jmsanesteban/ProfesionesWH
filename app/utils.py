@@ -1,5 +1,5 @@
 from functools import wraps
-from flask import abort, current_app
+from flask import abort, current_app, redirect, url_for, request
 from flask_login import current_user
 
 
@@ -10,6 +10,22 @@ def admin_required(f):
             abort(403)
         return f(*args, **kwargs)
     return decorated_function
+
+
+def require_permission(code: str):
+    """Decorator: allow access only if the user has the given permission code.
+    Admins bypass all permission checks. Unauthenticated users are redirected to login.
+    """
+    def decorator(f):
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            if not current_user.is_authenticated:
+                return redirect(url_for('auth.login', next=request.url))
+            if not current_user.has_perm(code):
+                abort(403)
+            return f(*args, **kwargs)
+        return decorated
+    return decorator
 
 
 def allowed_file(filename):

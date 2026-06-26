@@ -16,6 +16,7 @@ from app.models.profession import Profession, ProfessionSkill, ProfessionTalent,
 from app.models.skill import Skill
 from app.models.talent import Talent
 from app.models.synonym import Synonym, DEFAULT_SYNONYMS
+from app.models.permission import Permission, PermissionTemplate, ALL_PERMISSIONS
 from app.utils import admin_required, allowed_file
 from app.services.pdf_processor import process_pdf
 
@@ -27,8 +28,12 @@ admin_bp = Blueprint('admin', __name__, template_folder='../templates')
 # Async PDF job management (file-based state, cross-worker safe)
 # ---------------------------------------------------------------------------
 
-_JOBS_DIR = os.path.join(tempfile.gettempdir(), 'wh_pdf_jobs')
-os.makedirs(_JOBS_DIR, exist_ok=True)
+_JOBS_DIR  = os.path.join(tempfile.gettempdir(), 'wh_pdf_jobs')
+_CACHE_DIR = os.path.join(tempfile.gettempdir(), 'wh_pdf_cache')
+os.makedirs(_JOBS_DIR,  exist_ok=True)
+os.makedirs(_CACHE_DIR, exist_ok=True)
+
+_CACHE_TTL = 48 * 3600   # 48 h
 
 
 def _job_path(job_id: str) -> str:
@@ -49,6 +54,36 @@ def _read_job(job_id: str) -> dict | None:
     if not os.path.exists(path):
         return None
     try:
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _cache_path(cache_id: str) -> str:
+    safe = ''.join(c for c in cache_id if c.isalnum() or c == '-')
+    return os.path.join(_CACHE_DIR, f'{safe}.json')
+
+
+def _write_cache(cache_id: str, data: dict) -> None:
+    path = _cache_path(cache_id)
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _read_cache(cache_id: str) -> dict | None:
+    path = _cache_path(cache_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        if time.time() - os.path.getmtime(path) > _CACHE_TTL:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            return None
         with open(path, encoding='utf-8') as f:
             return json.load(f)
     except Exception:
@@ -94,8 +129,151 @@ def dashboard():
 @login_required
 @admin_required
 def users():
-    users_list = User.query.order_by(User.created_at.desc()).all()
-    return render_template('admin/users.html', users=users_list)
+    users_list  = User.query.order_by(User.created_at.desc()).all()
+    templates   = PermissionTemplate.query.order_by(PermissionTemplate.name).all()
+    return render_template('admin/users.html', users=users_list, templates=templates)
+
+
+@admin_bp.route('/usuarios/<int:user_id>/permisos', methods=['GET', 'POST'])
+@login_required
+@admin_required
+def user_edit(user_id):
+    from flask_login import current_user as me
+    user      = User.query.get_or_404(user_id)
+    templates = PermissionTemplate.query.order_by(PermissionTemplate.name).all()
+    # Group permissions by module for display
+    perms_by_module = {}
+    for code, name, desc, module in ALL_PERMISSIONS:
+        perms_by_module.setdefault(module, []).append(
+            Permission(code=code, name=name, description=desc, module=module)
+        )
+
+    if request.method == 'POST':
+        # Template assignment
+        tpl_id = request.form.get('template_id', '').strip()
+        user.template_id = int(tpl_id) if tpl_id.isdigit() else None
+
+        # Direct permission overrides: rebuild from checkboxes
+        selected_codes = set(request.form.getlist('permissions'))
+        all_codes      = {code for code, *_ in ALL_PERMISSIONS}
+        # Remove permissions no longer checked
+        user.direct_permissions = [
+            db.session.get(Permission, c)
+            for c in selected_codes
+            if c in all_codes and db.session.get(Permission, c)
+        ]
+        db.session.commit()
+        flash(f'Permisos de "{user.username}" actualizados.', 'success')
+        return redirect(url_for('admin.users'))
+
+    effective = user.effective_perm_codes()
+    direct    = {p.code for p in user.direct_permissions}
+    return render_template(
+        'admin/user_edit.html',
+        user=user,
+        templates=templates,
+        perms_by_module=perms_by_module,
+        effective=effective,
+        direct=direct,
+    )
+
+
+# ── Permission template management ───────────────────────────────────────────
+
+@admin_bp.route('/plantillas')
+@login_required
+@admin_required
+def permission_templates():
+    templates = PermissionTemplate.query.order_by(PermissionTemplate.name).all()
+    return render_template('admin/permission_templates.html', templates=templates)
+
+
+@admin_bp.route('/plantillas/nueva', methods=['GET', 'POST'])
+@login_required
+@admin_required
+def permission_template_create():
+    perms_by_module = {}
+    for code, name, desc, module in ALL_PERMISSIONS:
+        perms_by_module.setdefault(module, []).append(
+            Permission(code=code, name=name, description=desc, module=module)
+        )
+
+    if request.method == 'POST':
+        name  = request.form.get('name', '').strip()
+        desc  = request.form.get('description', '').strip()
+        codes = request.form.getlist('permissions')
+        if not name:
+            flash('El nombre de la plantilla es obligatorio.', 'danger')
+        elif PermissionTemplate.query.filter_by(name=name).first():
+            flash(f'Ya existe una plantilla llamada "{name}".', 'danger')
+        else:
+            perms = [db.session.get(Permission, c) for c in codes if db.session.get(Permission, c)]
+            db.session.add(PermissionTemplate(name=name, description=desc or None, permissions=perms))
+            db.session.commit()
+            flash(f'Plantilla "{name}" creada.', 'success')
+            return redirect(url_for('admin.permission_templates'))
+
+    return render_template(
+        'admin/template_edit.html',
+        template=None,
+        perms_by_module=perms_by_module,
+        checked=set(),
+    )
+
+
+@admin_bp.route('/plantillas/<int:tpl_id>/editar', methods=['GET', 'POST'])
+@login_required
+@admin_required
+def permission_template_edit(tpl_id):
+    tpl  = PermissionTemplate.query.get_or_404(tpl_id)
+    perms_by_module = {}
+    for code, name, desc, module in ALL_PERMISSIONS:
+        perms_by_module.setdefault(module, []).append(
+            Permission(code=code, name=name, description=desc, module=module)
+        )
+
+    if request.method == 'POST':
+        name  = request.form.get('name', '').strip()
+        desc  = request.form.get('description', '').strip()
+        codes = request.form.getlist('permissions')
+        if not name:
+            flash('El nombre de la plantilla es obligatorio.', 'danger')
+        else:
+            existing = PermissionTemplate.query.filter_by(name=name).first()
+            if existing and existing.id != tpl_id:
+                flash(f'Ya existe otra plantilla llamada "{name}".', 'danger')
+            else:
+                tpl.name        = name
+                tpl.description = desc or None
+                tpl.permissions = [
+                    db.session.get(Permission, c) for c in codes if db.session.get(Permission, c)
+                ]
+                db.session.commit()
+                flash(f'Plantilla "{name}" guardada.', 'success')
+                return redirect(url_for('admin.permission_templates'))
+
+    checked = {p.code for p in tpl.permissions}
+    return render_template(
+        'admin/template_edit.html',
+        template=tpl,
+        perms_by_module=perms_by_module,
+        checked=checked,
+    )
+
+
+@admin_bp.route('/plantillas/<int:tpl_id>/eliminar', methods=['POST'])
+@login_required
+@admin_required
+def permission_template_delete(tpl_id):
+    tpl  = PermissionTemplate.query.get_or_404(tpl_id)
+    name = tpl.name
+    # Unlink users that had this template
+    for u in User.query.filter_by(template_id=tpl_id).all():
+        u.template_id = None
+    db.session.delete(tpl)
+    db.session.commit()
+    flash(f'Plantilla "{name}" eliminada.', 'warning')
+    return redirect(url_for('admin.permission_templates'))
 
 
 @admin_bp.route('/usuarios/<int:user_id>/toggle', methods=['POST'])
@@ -168,6 +346,7 @@ def pdf_upload():
 
     _write_job(job_id, {
         'id': job_id,
+        'filename': file.filename,
         'percent': 0,
         'stage': 'Iniciando procesamiento…',
         'done': False,
@@ -211,13 +390,22 @@ def pdf_result(job_id):
         flash(f'Error durante el procesamiento: {job["error"]}', 'danger')
         return redirect(url_for('admin.pdf_upload'))
 
-    result = job.get('result') or {}
+    result   = job.get('result') or {}
+    filename = job.get('filename', '')
+
+    # Persist result for resume functionality (survives tab switch / server restart)
+    _write_cache(job_id, {'result': result, 'filename': filename, 'saved_at': time.time()})
 
     try:
         os.remove(_job_path(job_id))
     except OSError:
         pass
 
+    return _render_pdf_review(job_id, result, filename)
+
+
+def _render_pdf_review(cache_id: str, result: dict, filename: str):
+    """Shared rendering logic for pdf_result and pdf_resume."""
     for err in result.get('errors', []):
         flash(err, 'danger')
 
@@ -228,7 +416,6 @@ def pdf_result(job_id):
 
     professions = _validate_pdf_professions(result.get('professions', []), all_skills, all_talents)
 
-    # Pass synonyms to JS so chips can be auto-replaced
     synonyms_data = [
         {'source': s.source, 'target': s.target, 'is_prefix': s.is_prefix}
         for s in Synonym.query.order_by(Synonym.source).all()
@@ -247,7 +434,20 @@ def pdf_result(job_id):
         talents_data=talents_data,
         synonyms_data=synonyms_data,
         db_empty=len(all_skills) == 0 and len(all_talents) == 0,
+        cache_id=cache_id,
+        pdf_filename=filename,
     )
+
+
+@admin_bp.route('/pdf/resume/<cache_id>')
+@login_required
+@admin_required
+def pdf_resume(cache_id):
+    cached = _read_cache(cache_id)
+    if not cached:
+        flash('La sesión ha expirado o el PDF ya no está disponible. Procesa el PDF de nuevo.', 'warning')
+        return redirect(url_for('admin.pdf_upload'))
+    return _render_pdf_review(cache_id, cached.get('result') or {}, cached.get('filename', ''))
 
 
 @admin_bp.route('/pdf/guardar', methods=['POST'])
@@ -515,7 +715,22 @@ def _validate_pdf_professions(professions: list, all_skills, all_talents) -> lis
         if t.name_en:
             talent_names.add(t.name_en.lower())
 
+    # Load ES synonyms once — used for both name correction and chip validation
+    es_exact, es_prefix = _get_synonyms_dicts()
+
     for prof in professions:
+        # ── Apply synonym to profession name ──────────────────────────────
+        raw_name = prof.get('name', '')
+        if raw_name:
+            lower = raw_name.lower()
+            if lower in es_exact:
+                prof['name'] = es_exact[lower]
+            else:
+                for key in sorted(es_prefix, key=len, reverse=True):
+                    if lower.startswith(key + ' (') or lower.startswith(key + '('):
+                        prof['name'] = es_prefix[key] + raw_name[len(key):]
+                        break
+
         # ── Duplicate detection ────────────────────────────────────────────
         existing = Profession.query.filter(
             db.func.lower(Profession.name) == prof.get('name', '').lower()
@@ -525,8 +740,8 @@ def _validate_pdf_professions(professions: list, all_skills, all_talents) -> lis
                 'id':             existing.id,
                 'name':           existing.name,
                 'type':           existing.type,
-                'skill_count':    len(existing.skills),
-                'talent_count':   len(existing.talents),
+                'skill_count':    len(existing.profession_skills),
+                'talent_count':   len(existing.profession_talents),
                 'trapping_count': len(existing.trappings),
                 **{f: getattr(existing, f)
                    for f in (Profession.PRIMARY_FIELDS + Profession.SECONDARY_FIELDS)},
@@ -542,7 +757,7 @@ def _validate_pdf_professions(professions: list, all_skills, all_talents) -> lis
         if is_en:
             exact_syn, prefix_syn = _EN_SYNONYMS, {}
         else:
-            exact_syn, prefix_syn = _get_synonyms_dicts()
+            exact_syn, prefix_syn = es_exact, es_prefix  # reuse already-loaded dicts
 
         unmatched_skills = []
         if skill_names:

@@ -27,12 +27,13 @@
     <div class="card wh-card mb-4">
       <div class="card-header wh-card-header d-flex justify-content-between">
         <span>{{ loop.index }}. {{ prof_data.name or '(sin nombre)' }}</span>
+
         <span class="badge {% if prof_data.type == 'basic' %}bg-success{% else %}bg-warning text-dark{% endif %}">
           {{ 'Básica' if prof_data.type == 'basic' else 'Avanzada' }}
         </span>
       </div>
       <div class="card-body">
-        <form method="POST" action="{{ url_for('admin.pdf_save') }}">
+        <form method="POST" action="{{ url_for('admin.pdf_save') }}" data-prof-idx="{{ loop.index0 }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
           {# ── Duplicate warning + mode selector ────────────────────────── #}
@@ -380,6 +381,18 @@
    * Apply synonym normalization AND strip stat suffix.
    * Returns the corrected/clean chip text (ready to save).
    */
+  function _applyOnePart(part) {
+    var l = part.toLowerCase();
+    if (SYN_EXACT[l] !== undefined) return SYN_EXACT[l];
+    var keys = Object.keys(SYN_PREFIX).sort(function(a,b){ return b.length - a.length; });
+    for (var i = 0; i < keys.length; i++) {
+      if (l.startsWith(keys[i] + ' (') || l.startsWith(keys[i] + '(')) {
+        return SYN_PREFIX[keys[i]] + part.slice(keys[i].length);
+      }
+    }
+    return part;
+  }
+
   function applyReplacement(text) {
     var stripped = stripStatSuffix(text.trim());
     var lower    = stripped.toLowerCase();
@@ -394,6 +407,14 @@
       if (lower.startsWith(key + ' (') || lower.startsWith(key + '(')) {
         return SYN_PREFIX[key] + stripped.slice(key.length);
       }
+    }
+
+    // "X o Y" / "X or Y" — apply synonym to each part individually
+    var orParts = stripped.split(/\s+(?:o|or)\s+/i);
+    if (orParts.length > 1) {
+      var replaced = orParts.map(function(p) { return _applyOnePart(p.trim()); });
+      var changed  = replaced.some(function(r, i) { return r !== orParts[i].trim(); });
+      if (changed) return replaced.join(' o ');
     }
 
     return stripped;   // at minimum strip the stat suffix
@@ -715,7 +736,85 @@
     });
   };
 
+  // ── Session cache: save & restore chip/form state across tab switches ──
+  var CACHE_ID   = {{ cache_id | tojson }};
+  var PDF_FNAME  = {{ pdf_filename | tojson }};
+  var STATE_KEY  = CACHE_ID ? ('wh_pdf_state_' + CACHE_ID) : null;
+  var LAST_KEY   = 'wh_last_pdf';
+
+  function getProfForms() {
+    return Array.from(document.querySelectorAll('form[data-prof-idx]'));
+  }
+
+  function saveState() {
+    if (!STATE_KEY) return;
+    var state = {};
+    getProfForms().forEach(function(form) {
+      var idx = form.dataset.profIdx;
+      var e = {};
+      ['name','name_en'].forEach(function(n) {
+        var el = form.querySelector('[name="' + n + '"]');
+        if (el) e[n] = el.value;
+      });
+      ['skills_raw','talents_raw','trappings_raw'].forEach(function(n) {
+        var el = form.querySelector('input[type="hidden"][name="' + n + '"]');
+        if (el) e[n] = el.value;
+      });
+      ['entries_raw','exits_raw'].forEach(function(n) {
+        var el = form.querySelector('textarea[name="' + n + '"]');
+        if (el) e[n] = el.value;
+      });
+      state[idx] = e;
+    });
+    try { localStorage.setItem(STATE_KEY, JSON.stringify(state)); } catch(err) {}
+  }
+
+  function restoreState() {
+    if (!STATE_KEY) return;
+    var str; try { str = localStorage.getItem(STATE_KEY); } catch(err) { return; }
+    if (!str) return;
+    var state; try { state = JSON.parse(str); } catch(err) { return; }
+    getProfForms().forEach(function(form) {
+      var e = state[form.dataset.profIdx];
+      if (!e) return;
+      ['name','name_en'].forEach(function(n) {
+        if (e[n] !== undefined) { var el = form.querySelector('[name="' + n + '"]'); if (el) el.value = e[n]; }
+      });
+      ['skills_raw','talents_raw','trappings_raw'].forEach(function(n) {
+        if (e[n] !== undefined) { var el = form.querySelector('input[type="hidden"][name="' + n + '"]'); if (el) el.value = e[n]; }
+      });
+      ['entries_raw','exits_raw'].forEach(function(n) {
+        if (e[n] !== undefined) { var el = form.querySelector('textarea[name="' + n + '"]'); if (el) el.value = e[n]; }
+      });
+    });
+  }
+
+  // Restore before ChipField init so chips read the restored hidden values
+  restoreState();
+
+  // Patch _sync to auto-save on every chip change
+  var _origSync = ChipField.prototype._sync;
+  ChipField.prototype._sync = function() { _origSync.call(this); saveState(); };
+
   document.querySelectorAll('.chip-wrap').forEach(function (wrap) { new ChipField(wrap); });
+
+  // Save on text field changes too
+  if (STATE_KEY) {
+    getProfForms().forEach(function(form) {
+      form.querySelectorAll('input[name="name"], input[name="name_en"], textarea').forEach(function(el) {
+        el.addEventListener('input', saveState);
+      });
+    });
+    // Register this session in localStorage for the upload page resume button
+    try {
+      localStorage.setItem(LAST_KEY, JSON.stringify({
+        cache_id: CACHE_ID,
+        saved_at: Date.now(),
+        filename: PDF_FNAME,
+      }));
+    } catch(err) {}
+  }
+
 })();
 </script>
 {% endblock %}

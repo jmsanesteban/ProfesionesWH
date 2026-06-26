@@ -6,7 +6,7 @@ from app.extensions import db
 from app.models.skill import Skill
 from app.models.talent import Talent
 from app.models.profession import Profession, ProfessionSkill, ProfessionTalent
-from app.utils import admin_required
+from app.utils import admin_required, require_permission
 
 skills_talents_bp = Blueprint('skills_talents', __name__, template_folder='../templates')
 
@@ -73,8 +73,7 @@ def skill_detail(skill_id):
 
 
 @skills_talents_bp.route('/habilidades/nueva', methods=['GET', 'POST'])
-@login_required
-@admin_required
+@require_permission('skills.edit')
 def create_skill():
     if request.method == 'POST':
         skill = Skill(
@@ -93,8 +92,7 @@ def create_skill():
 
 
 @skills_talents_bp.route('/habilidades/<int:skill_id>/editar', methods=['GET', 'POST'])
-@login_required
-@admin_required
+@require_permission('skills.edit')
 def edit_skill(skill_id):
     skill = Skill.query.get_or_404(skill_id)
     if request.method == 'POST':
@@ -111,8 +109,7 @@ def edit_skill(skill_id):
 
 
 @skills_talents_bp.route('/habilidades/<int:skill_id>/eliminar', methods=['POST'])
-@login_required
-@admin_required
+@require_permission('skills.edit')
 def delete_skill(skill_id):
     skill = Skill.query.get_or_404(skill_id)
     name  = skill.name_es
@@ -240,8 +237,7 @@ def talent_detail(talent_id):
 
 
 @skills_talents_bp.route('/talentos/nuevo', methods=['GET', 'POST'])
-@login_required
-@admin_required
+@require_permission('skills.edit')
 def create_talent():
     if request.method == 'POST':
         talent = Talent(
@@ -258,8 +254,7 @@ def create_talent():
 
 
 @skills_talents_bp.route('/talentos/<int:talent_id>/editar', methods=['GET', 'POST'])
-@login_required
-@admin_required
+@require_permission('skills.edit')
 def edit_talent(talent_id):
     talent = Talent.query.get_or_404(talent_id)
     if request.method == 'POST':
@@ -274,8 +269,7 @@ def edit_talent(talent_id):
 
 
 @skills_talents_bp.route('/talentos/<int:talent_id>/eliminar', methods=['POST'])
-@login_required
-@admin_required
+@require_permission('skills.edit')
 def delete_talent(talent_id):
     talent = Talent.query.get_or_404(talent_id)
     name   = talent.name_es
